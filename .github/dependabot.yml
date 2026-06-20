@@ -8,9 +8,9 @@ updates:
     # Wait before proposing an update, so a malicious release has time to be
     # caught and yanked by the community. Security updates for known CVEs
     # bypass this cooldown, so vulnerability fixes still arrive immediately.
+    # github-actions supports only default-days (no semver-* tiers).
     cooldown:
       default-days: 7
-      semver-major-days: 30
     groups:
       actions:
         patterns: ["*"]
