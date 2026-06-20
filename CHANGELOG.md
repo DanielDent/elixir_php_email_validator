@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/DanielDent/elixir_php_email_validator/compare/v1.0.0...v1.0.1) (2026-06-20)
+
+
+### Bug Fixes
+
+* drop unsupported semver-major-days cooldown for github-actions ([4836149](https://github.com/DanielDent/elixir_php_email_validator/commit/4836149147e92bbdc41ba732f3d0b791fd0d2846))
+
 ## 1.0.0 (2026-06-20)
 
 
