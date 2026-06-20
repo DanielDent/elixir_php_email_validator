@@ -24,6 +24,8 @@ ElixirPhpEmailValidator.valid?("日本語@example.com", unicode: true) #=> true
 > want "a reasonable email check", a normal regex or `EctoCommons.EmailValidator`
 > is probably what you want instead.
 
+[![Hex.pm](https://img.shields.io/hexpm/v/elixir_php_email_validator.svg)](https://hex.pm/packages/elixir_php_email_validator)
+[![Hex Docs](https://img.shields.io/badge/hex-docs-blue.svg)](https://hexdocs.pm/elixir_php_email_validator)
 [![CI](https://github.com/DanielDent/elixir_php_email_validator/actions/workflows/ci.yml/badge.svg)](https://github.com/DanielDent/elixir_php_email_validator/actions/workflows/ci.yml)
 [![Drift detector](https://github.com/DanielDent/elixir_php_email_validator/actions/workflows/drift.yml/badge.svg)](https://github.com/DanielDent/elixir_php_email_validator/actions/workflows/drift.yml)
 
@@ -31,7 +33,7 @@ ElixirPhpEmailValidator.valid?("日本語@example.com", unicode: true) #=> true
 
 ```elixir
 def deps do
-  [{:elixir_php_email_validator, "~> 0.1"}]
+  [{:elixir_php_email_validator, "~> 1.0"}]
 end
 ```
 
