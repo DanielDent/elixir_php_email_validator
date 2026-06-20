@@ -19,7 +19,7 @@ jobs:
     name: Quality (format · credo · dialyzer)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.3
       - uses: erlef/setup-beam@v1
         with:
           otp-version: "28"
@@ -28,7 +28,7 @@ jobs:
       - run: mix format --check-formatted
       - run: mix credo --strict
       - name: Cache Dialyzer PLT
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: priv/plts
           key: plt-${{ runner.os }}-otp28-elixir1.19-${{ hashFiles('**/mix.lock') }}
@@ -51,7 +51,7 @@ jobs:
           - { elixir: "1.17", otp: "27" }
           - { elixir: "1.19", otp: "28" }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.3
       - uses: erlef/setup-beam@v1
         with:
           otp-version: ${{ matrix.otp }}
@@ -126,7 +126,7 @@ jobs:
       matrix:
         php: ${{ fromJson(needs.php-versions.outputs.cycles) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.3
       - uses: erlef/setup-beam@v1
         with:
           otp-version: "28"
@@ -142,7 +142,7 @@ jobs:
           mix php.golden
           mix test --include php
       - name: Upload golden verdicts for this PHP version
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: golden-php-${{ matrix.php }}
           path: test/fixtures/golden/*.tsv
@@ -156,7 +156,7 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.3
       # Resolve the latest *stable* Elixir (exclude -rc/pre-releases to avoid
       # noise), on current-stable OTP. A new OTP major is the one rare manual
       # bump; new Elixir minors are picked up here automatically.
@@ -190,7 +190,7 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6.0.3
       - id: resolve
         run: |
           set -uo pipefail
