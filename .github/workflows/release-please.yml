@@ -1,0 +1,84 @@
+name: Release
+
+# Fully automated release pipeline:
+#   1. release-please watches `main` for Conventional Commits and maintains an
+#      open "release PR" that bumps the version (mix.exs) and updates CHANGELOG.
+#   2. When you merge that PR, release-please tags + creates a GitHub Release.
+#   3. The `publish` job then publishes that version to Hex.pm.
+#
+# The publish job runs in the protected `hex-publish` GitHub Environment, so the
+# Hex credential is never exposed to pull requests, forks, or logs, and only the
+# real release path can use it. See RELEASING.md for the one-time setup.
+#
+# NOTE: the publish job and release-please MUST live in the same workflow run.
+# release-please creates the tag/release with GITHUB_TOKEN, and events raised by
+# GITHUB_TOKEN do not trigger separate `on: release`/`on: push: tags` workflows.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # manual escape hatch: publish whatever version is on main
+
+# Default-deny; each job declares exactly what it needs.
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: Maintain release PR / cut release
+    runs-on: ubuntu-latest
+    # The action's documented permission set.
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+      tag_name: ${{ steps.rp.outputs.tag_name }}
+    steps:
+      # SHA-pinned: this job has `contents: write` and creates the tag/commit a
+      # release is built from, so a moved tag must not be able to swap in code.
+      - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
+        id: rp
+        with:
+          # Uses release-please-config.json + .release-please-manifest.json.
+          # GITHUB_TOKEN is sufficient — no personal token required.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  publish:
+    name: Publish to Hex.pm
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    # All Hex publishing happens here, behind environment protection rules.
+    environment:
+      name: hex-publish
+      url: https://hex.pm/packages/elixir_php_email_validator
+    permissions:
+      contents: read
+      # id-token: write   # ← uncomment when switching to Hex OIDC trusted publishing
+    steps:
+      # This is the ONLY job with the Hex credential, so its actions are pinned
+      # to immutable commit SHAs (a moved tag can't swap in malicious code).
+      # Dependabot keeps these current — on a cooldown so a malicious release
+      # has time to be caught before it is proposed. See RELEASING.md.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+      - run: mix deps.get
+      # Final gate: never publish a version that fails the golden regression.
+      - run: mix test
+      - name: Publish package + docs to Hex
+        run: mix hex.publish --yes
+        env:
+          # A least-privilege Hex API key stored as an Environment secret.
+          # This is the most secure option available today; Hex.pm OIDC
+          # "trusted publishing" is on their roadmap but not yet GA (as of
+          # 2026-06). When it ships, delete this secret, add `id-token: write`
+          # above, and follow RELEASING.md — no code-structure change needed.
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}

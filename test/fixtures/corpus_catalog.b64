@@ -1,0 +1,140 @@
+# Authoritative quirks catalog — 136 byte-exact cases ground-truthed on PHP 8.5.5.
+# Produced by the research workflow (independently reproduced by OTP 28 :re, 0 mismatches).
+# Format: base64(input) <TAB> category <TAB> why.  Loader uses field 1 (the input);
+# fields 2-3 are human/diff documentation. Comment lines start with '#'.
+YUBiLmM=	Basic	minimal valid: local + domain with a dot/TLD
+YUBi	Basic	domain has no dot; regex domain branch requires at least one label + TLD
+dGVzdEBleGFtcGxlLmNvbQ==	Basic	ordinary valid address
+	Basic	empty input never matches the anchored regex
+IA==	Basic	whitespace-only; space is not a valid local-part char
+ICAg	Basic	whitespace-only; never valid
+YUBiLmNvbQ==	Basic	ordinary valid
+cGxhaW5hZGRyZXNz	Basic	no @ at all
+YUBAYi5jb20=	Basic	two @ signs; local/domain split fails
+YUAtYi5jb20=	Domain labels	leading hyphen in label; label must start [a-z0-9]
+YUBiLS5jb20=	Domain labels	trailing hyphen before dot; label must end [a-z0-9]
+YUBkLS5jb20=	Domain labels	trailing hyphen in first label (TLD ok) - invalid
+YUAtZC5jb20=	Domain labels	leading hyphen first label - invalid
+YUBiLi5j	Domain labels	consecutive dots = empty label, not allowed
+YUBiLmNvbS4=	Domain labels	trailing dot leaves empty final TLD label - invalid
+Zm9vQGJhci5jb20u	Domain labels	trailing root dot rejected by this regex
+YUBiLWMuY29t	Domain labels	internal hyphen is fine
+YUBiLS1jLmNvbQ==	Domain labels	consecutive internal hyphens allowed by (-+[a-z0-9]+)
+YUBiX2MuY29t	Domain labels	underscore not in [a-z0-9]; domain rejects underscore
+YUBiLmNfZA==	Domain labels	underscore in TLD label - invalid
+YUB4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHguY29t	Domain labels	63-char label OK; (?!.*[^.]{64,}) negative lookahead allows 63
+YUB4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4LmNvbQ==	Domain labels	64-char label tripped by (?!.*[^.]{64,}) - invalid
+YUB4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHgueXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5eXl5LmNvbQ==	Domain labels	two 63-char labels OK individually
+YUBiLjEyMw==	Domain labels	TLD branch is [a-z][a-z0-9]* OR xn--...; all-digit TLD has no leading letter - invalid
+YUBiLmMxMjM=	Domain labels	TLD starts with letter then digits - valid
+YUBiLjFj	Domain labels	TLD starts with digit - invalid
+YUBiLmM=	Domain labels	single-char alpha TLD allowed ([a-z][a-z0-9]*)
+YUBiLng=	Domain labels	single-char alpha TLD valid
+YUB4bi0tODBhazZhYTkyZS5jb20=	Domain labels	xn-- punycode label handled by (?:xn--)?[a-z0-9]+...
+YUBleGFtcGxlLnhuLS1wMWFp	Domain labels	xn-- punycode TLD allowed by (?:xn--)[a-z0-9]+ TLD branch
+YUB4bi0tLmNvbQ==	Domain labels	xn-- with no following alnum - invalid
+YUBiLmMuZC5lLmYuZw==	Domain labels	many labels allowed (up to 126 per quantifier)
+YUBiLmNv	Domain labels	two-char TLD valid
+YUBsb2NhbGhvc3Q=	Domain labels	single bare label, no dot/TLD - invalid
+dXNlckBsb2NhbGhvc3Q=	Domain labels	localhost has no TLD dot - invalid
+YUBiLmMtZA==	Domain labels	TLD label with hyphen via (?:-+[a-z0-9]+)* - valid
+YUAzLmNvbQ==	Domain labels	numeric leading label OK ([a-z0-9]+), letter TLD
+YUAxLjIuMy40	IP literal	bare IPv4 not bracketed; treated as domain, '4' TLD starts digit - invalid
+YUBbMS4yLjMuNF0=	IP literal	bracketed IPv4 literal handled by [ ... ] branch
+YUBbMTI3LjAuMC4xXQ==	IP literal	bracketed loopback valid
+YUAxMjcuMC4wLjE=	IP literal	bare IP, TLD '1' invalid
+YUBbMDEuMi4zLjRd	IP literal	leading-zero octet; regex octet alts don't allow '01' (0[1-9] not matched) - invalid
+YUBbMDAxLjIuMy40XQ==	IP literal	leading zeros - invalid octet form
+YUBbOTk5LjEuMS4xXQ==	IP literal	999 out of 0-255 range per octet alternation - invalid
+YUBbMjU2LjEuMS4xXQ==	IP literal	256 > 255 - invalid
+YUBbMjU1LjI1NS4yNTUuMjU1XQ==	IP literal	max valid IPv4 octets
+YUBbMC4wLjAuMF0=	IP literal	all-zero octets valid (0 matches [1-9]?[0-9])
+YUBbMS4yLjNd	IP literal	only 3 octets - invalid
+YUBbMS4yLjMuNC41XQ==	IP literal	5 octets - invalid
+YUBbMTIzLjQ1LjY3Ljg5XQ==	IP literal	valid bracketed IPv4
+YUAxMjMuNDUuNjcuODk=	IP literal	bare; TLD '89' digit-leading invalid
+ZW1haWxAMTIzLjEyMy4xMjMuMTIz	IP literal	bare IP as domain, numeric TLD invalid
+eEAxMTEuMjIyLjMzMy40NDQ0NA==	IP literal	bare, not IP literal, numeric TLD invalid
+YUBbSVB2Njo6OjFd	IPv6	compressed loopback ::1 valid
+YUBbSVB2NjpmZTgwOjoxXQ==	IPv6	link-local compressed valid
+YUBbSVB2NjoyMDAxOmRiODo6MV0=	IPv6	doc-prefix compressed valid
+YUBbSVB2NjoyMDAxOjBkYjg6MDAwMDowMDAwOjAwMDA6MDAwMDowMDAwOjAwMDFd	IPv6	full 8-group form valid
+YUBbSVB2NjoxOjI6Mzo0OjU6Njo3Ojhd	IPv6	exactly 8 groups valid
+YUBbSVB2NjoxOjI6Mzo0OjU6Njo3Ojg6OV0=	IPv6	9 groups - too many, invalid
+YUBbSVB2Njo6Ol0=	IPv6	all-zero compressed :: valid
+YUBbSVB2NjpnZ2dnOjoxXQ==	IPv6	g is not a hex digit [a-f0-9] - invalid
+YUBbSVB2NjoxMjM0NTo6MV0=	IPv6	5-hex-digit group exceeds {1,4} - invalid
+YUBbSVB2Njo6OmZmZmY6MS4yLjMuNF0=	IPv6	IPv4-mapped/embedded IPv4 tail valid
+YUBbSVB2NjoyMDAxOmRiODo6MS4yLjMuNF0=	IPv6	compressed + embedded IPv4 valid
+YUBbSVB2NjoxLjIuMy40XQ==	IPv6	IPv6 tag but only IPv4, no ::; needs :: prefix path - invalid
+YUBbMToyOjM6NDo1OjY6Nzo4XQ==	IPv6	IPv6 groups without IPv6: tag - invalid
+YUBbSVB2NmZlODA6OjFd	IPv6	missing colon after IPv6 tag - invalid
+InF1b3RlZCJAZXhhbXBsZS5jb20=	Local part	quoted-string local part allowed
+ImEgYiJAYy5kZQ==	Local part	bare space even quoted is NOT in quoted-char class - invalid
+ImEgYiJAeC5jb20=	Local part	space char excluded from quoted class [\x01-..] (no 0x20) - invalid
+bXVjaC4ibW9yZVwgdW51c3VhbCJAZXhhbXBsZS5jb20=	Local part	backslash-escaped space via \x5C[\x00-\x7F] - valid
+Im11Y2gubW9yZSB1bnVzdWFsIkB4LmNvbQ==	Local part	unescaped space in quotes invalid
+Ii5mb28iQGJhci5jb20=	Local part	leading dot inside quotes is fine (quoted content)
+LmZvb0BiYXIuY29t	Local part	leading dot in unquoted local - invalid (dot-atom)
+Zm9vLkBiYXIuY29t	Local part	trailing dot in unquoted local - invalid
+YS4uYkB4LmNvbQ==	Local part	consecutive dots in unquoted local - empty atom invalid
+YS5iQHguY29t	Local part	single internal dot valid (dot-atom)
+QHguY29t	Local part	empty local part - invalid
+QGV4YW1wbGUuY29t	Local part	empty local part - invalid
+YUA=	Local part	empty domain - invalid
+ISMkJSYnKistLz0/Xl9ge3x9fkB4LmNvbQ==	Local part	all RFC atext specials allowed in dot-atom local
+YShjb21tZW50KWJAeC5jb20=	Local part	( ) not in atext class; comments unsupported - invalid
+YSxiQHguY29t	Local part	comma not in atext - invalid
+YTtiQHguY29t	Local part	semicolon not in atext - invalid
+YTpiQHguY29t	Local part	colon not in atext (unquoted) - invalid
+YSBiQGMuZGU=	Local part	unquoted space - invalid
+YVxAYkB4LmNvbQ==	Local part	backslash-at unquoted; backslash not atext - invalid
+ImFAYiJAeC5jb20=	Local part	@ inside quotes is fine; outer @ splits
+ImFcImIiQHguY29t	Local part	escaped quote inside quoted string valid
+IiJAeC5jb20=	Local part	empty quoted string local part - valid (quoted* allows zero)
+IlxcIkB4LmNvbQ==	Local part	quoted escaped backslash valid
+YQliQHguY29t	Control bytes	raw TAB not in unquoted atext - invalid
+YQBiQHguY29t	Control bytes	raw NUL not valid in unquoted local - invalid
+ImEJYiJAeC5jb20=	Control bytes	0x09 not in quoted class (\x0B,\x0C,... but not 0x09) - invalid
+ImEHYiJAeC5jb20=	Control bytes	0x07 IS in quoted class \x01-\x08 - valid
+ImEBYiJAeC5jb20=	Control bytes	0x01 in quoted class \x01-\x08 - valid
+ImEKYiJAeC5jb20=	Control bytes	0x0A (LF) excluded from quoted class - invalid
+ImENYiJAeC5jb20=	Control bytes	0x0D (CR) excluded - invalid
+ImELYiJAeC5jb20=	Control bytes	0x0B in quoted class - valid
+YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYUB4LmNvbQ==	Length	64-char local OK; lookahead (?!...{65,}@) blocks >=65
+YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFAeC5jb20=	Length	65-char local tripped by (?!(?:...){65,}@) - invalid
+YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhQHguY29t	Length	63-char local OK
+YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYUBiYi5jb20=	Length	boundary 64-char local with valid domain - valid
+YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYUBjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2MuY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjLmNjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjYy5jY2NjYw==	Length	253-byte well-formed address (local<=64, labels<=63) - valid
+YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYUBjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2MuY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjLmNjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjYy5jY2NjY2M=	Length	254 bytes = the REAL practical max; first lookahead (?!(?:...){255,}) counts whole string - still valid
+YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYUBjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2MuY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjLmNjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjYy5jY2NjY2Nj	Length	255 bytes: rejected by the regex's FIRST lookahead {255,} (NOT the 320 C check) - INVALID. Effective cap is 254, not 320.
+YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYUBjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2MuY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjLmNjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjYy5jY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2MuY2NjY2NjY2NjY2M=	Length	320 bytes: even though the C pre-check allows <=320, the {255,} regex lookahead already rejects it - INVALID
+YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYUBjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2MuY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjLmNjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjYy5jY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2MuY2NjY2NjY2NjY2Nj	Length	321 bytes: rejected by the explicit C length pre-check (>320) BEFORE the regex runs - INVALID
+VVNFUkBFWEFNUExFLkNPTQ==	Case	caseless /i flag; uppercase domain matches [a-z]
+TWl4ZWRDYXNlQEV4QW1QbEUuQ29N	Case	mixed case valid under /i
+QUBCLkM=	Case	all uppercase minimal valid
+5pel5pys6KqeQGV4YW1wbGUuY29t	Unicode	CJK letters: invalid default, valid with UNICODE flag (\pL in class)
+dXNlcuaXpeacrEBleGFtcGxlLmNvbQ==	Unicode	mixed ASCII+CJK local; valid only with flag
+Y2Fmw6lAZXhhbXBsZS5jb20=	Unicode	accented latin é: \pL letter; valid with flag only
+dGVzdEDml6XmnKzoqp4uY29t	Unicode	domain stays ASCII [a-z0-9]; CJK domain invalid even with flag
+dGVzdEBjYWbDqS5jb20=	Unicode	domain class has no \pL; accented domain invalid even with flag
+zqlAZXhhbXBsZS5jb20=	Unicode	Greek letter \pL valid with flag only
+4oWnQGV4YW1wbGUuY29t	Unicode	roman numeral has \pN (number) property; valid with flag
+4pGgQGV4YW1wbGUuY29t	Unicode	circled digit is \pN; valid with flag
+8J2Vj0BleGFtcGxlLmNvbQ==	Unicode	math alphanumeric is \pL letter; valid with flag
+8J+YgEBleGFtcGxlLmNvbQ==	Unicode	emoji is symbol (So), not \pL/\pN; invalid even with flag
+4p2kQGV4YW1wbGUuY29t	Unicode	symbol not letter/number; invalid even with flag
+ZcyBQGV4YW1wbGUuY29t	Unicode	combining mark \pM is not \pL/\pN; invalid even with flag
+77ym772V772M772MQGV4YW1wbGUuY29t	Unicode	fullwidth latin are \pL; valid with flag
+2aHZotmjQGV4YW1wbGUuY29t	Unicode	Arabic-Indic digits \pN; valid with flag
+bmHDr3ZlQGV4YW1wbGUuY29t	Unicode	accented latin valid with flag, invalid default
+IuaXpeacrCJAZXhhbXBsZS5jb20=	Unicode	quoted unicode: \pL added to quoted class too in regexp0 - valid with flag
+dGVzdEBleGFtcGxlLmNvbQo=	Trailing/embedded	trailing newline; D flag (DOLLAR_ENDONLY) means $ no longer matches before final \n - invalid
+dGVzdEBleGFtcGxlLmNvbQ0K	Trailing/embedded	trailing CRLF; not allowed - invalid
+dGVzdEBleGFtcGxlLmNvbQA=	Trailing/embedded	trailing NUL after domain - invalid
+AHRlc3RAZXhhbXBsZS5jb20=	Trailing/embedded	leading NUL byte breaks anchored match - invalid
+dGVzdEBleGFtAHBsZS5jb20=	Trailing/embedded	embedded NUL in domain - invalid
+CnRlc3RAZXhhbXBsZS5jb20=	Trailing/embedded	leading newline - invalid
+dGVzdEBleGFtcGxlLmNvbSA=	Trailing/embedded	trailing space - invalid
+IHRlc3RAZXhhbXBsZS5jb20=	Trailing/embedded	leading space - invalid
+dGVzdEBleGFtcGxlLmNvbQk=	Trailing/embedded	trailing tab - invalid

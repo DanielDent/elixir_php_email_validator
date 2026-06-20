@@ -1,0 +1,27 @@
+{
+  "_comment": "Provenance for the vendored PHP FILTER_VALIDATE_EMAIL regexes. Regenerate with `mix php.extract`. The library does not parse this file at runtime; ElixirPhpEmailValidator.source_info/0 derives its checksums from the actual vendored bytes. This file is the canonical record for humans and CI/jq tooling.",
+  "upstream": {
+    "repo": "https://github.com/php/php-src",
+    "file": "ext/filter/logical_filters.c",
+    "function": "php_filter_validate_email",
+    "ref": "PHP-8.5",
+    "blob_url": "https://github.com/php/php-src/blob/PHP-8.5/ext/filter/logical_filters.c",
+    "raw_url": "https://raw.githubusercontent.com/php/php-src/PHP-8.5/ext/filter/logical_filters.c"
+  },
+  "vendored_at": "2026-06-20",
+  "max_length_octets": 320,
+  "match_flags": {
+    "default": "/iD  (i = caseless, D = PCRE_DOLLAR_ENDONLY)",
+    "unicode": "/iDu (adds u = PCRE_UTF8 + PCRE_UCP, used with FILTER_FLAG_EMAIL_UNICODE)"
+  },
+  "re_options": {
+    "default": ["caseless", "dollar_endonly"],
+    "unicode": ["caseless", "dollar_endonly", "unicode", "ucp"]
+  },
+  "files": {
+    "regexp1.pattern": { "role": "default (ASCII) inner pattern", "sha256": "7b1547fde43f36887064c2d1bf1ec46ed45a1fdfb5d152456246686fe1c9f09d" },
+    "regexp0.pattern": { "role": "FILTER_FLAG_EMAIL_UNICODE inner pattern", "sha256": "47c6586005ace669405df6fbef6420e391962368981adef82ab4b673ab3db57a" },
+    "regexp1.full": { "role": "default regex with /.../iD", "sha256": "441ced67865bdd1975f9518c4bf41cb0c510cc7edd395769ec4acd34d384c86f" },
+    "regexp0.full": { "role": "unicode regex with /.../iDu", "sha256": "f40b5b868fe53fc3d820e4500032360528eb3c9af223753c6c197c1513bfe320" }
+  }
+}

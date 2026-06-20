@@ -1,0 +1,262 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Weekly self-test, even with no commits: catches behaviour drift from new PHP
+  # patch releases and (via the canary) from new Elixir/OTP releases.
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Quality gate: formatting, Credo, Dialyzer (every push/PR) ──────────────
+  quality:
+    name: Quality (format · credo · dialyzer)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+      - run: mix deps.get
+      - run: mix format --check-formatted
+      - run: mix credo --strict
+      - name: Cache Dialyzer PLT
+        uses: actions/cache@v4
+        with:
+          path: priv/plts
+          key: plt-${{ runner.os }}-otp28-elixir1.19-${{ hashFiles('**/mix.lock') }}
+          restore-keys: plt-${{ runner.os }}-otp28-elixir1.19-
+      - run: mix dialyzer --format github
+
+  # ── Golden regression, no PHP needed ───────────────────────────────────────
+  # Proves the library reproduces the committed golden verdicts (recorded from
+  # real PHP) on a range of Elixir/OTP versions. The default (ASCII) path is
+  # engine-independent; the unicode path depends on the OTP-bundled PCRE, so the
+  # matrix empirically validates which OTPs give byte-identical unicode parity.
+  test:
+    name: mix test (golden) — Elixir ${{ matrix.elixir }} / OTP ${{ matrix.otp }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { elixir: "1.15", otp: "26" }
+          - { elixir: "1.17", otp: "27" }
+          - { elixir: "1.19", otp: "28" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp }}
+          elixir-version: ${{ matrix.elixir }}
+      - run: mix deps.get
+      - run: mix test
+
+  # ── Discover currently-supported PHP versions (no hardcoded list) ──────────
+  # New PHP releases get tested automatically and EOL ones drop off, sourced
+  # from endoflife.date with a fallback so a flaky API never blocks CI.
+  php-versions:
+    name: Discover supported PHP versions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write # to flag a sustained discovery fallback on scheduled runs
+    outputs:
+      cycles: ${{ steps.detect.outputs.cycles }}
+    steps:
+      - id: detect
+        run: |
+          set -euo pipefail
+          today=$(date -u +%F)
+          # endoflife.date legacy schema: [{ "cycle": "8.5", "eol": "2029-12-31", … }].
+          # This endpoint is the one external dependency of the self-updating matrix.
+          # If it is ever retired or reshaped, migrate to the v1 API
+          # https://endoflife.date/api/v1/products/php
+          # (shape: .result.releases[].name / .isEol / .eolFrom).
+          cycles=$(curl -fsSL --max-time 20 https://endoflife.date/api/php.json \
+            | jq -c --arg today "$today" \
+                '[.[] | select((.eol | type == "string") and (.eol > $today)) | .cycle]' \
+            || echo "")
+          if [ -z "$cycles" ] || [ "$cycles" = "[]" ]; then
+            echo "::warning::endoflife.date unavailable or reshaped; using fallback PHP list"
+            cycles='["8.2","8.3","8.4","8.5"]'
+            echo "fallback=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "fallback=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "cycles=$cycles" >> "$GITHUB_OUTPUT"
+          echo "Supported PHP cycles: $cycles"
+      # A fallback on a *scheduled* run means discovery is silently frozen on the
+      # pinned list (endoflife.date down or reshaped) — escalate so the
+      # "self-updating matrix" guarantee can't rot unnoticed. PR/push fallbacks are
+      # usually transient and stay quiet.
+      - name: Flag a sustained discovery fallback
+        if: ${{ steps.detect.outputs.fallback == 'true' && github.event_name == 'schedule' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="PHP version discovery fell back to a pinned list"
+          body="endoflife.date discovery returned nothing usable, so CI is using the hardcoded fallback PHP list and the matrix is frozen. If this persists, /api/php.json may be down or reshaped — migrate to /api/v1/products/php. Run: $RUN_URL"
+          num=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$num" ]; then
+            gh issue comment "$num" --body "Still falling back (re-checked). $body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
+
+  # ── Differential parity vs a real PHP version matrix ───────────────────────
+  # For each supported PHP, install the real `php`, regenerate golden verdicts
+  # straight from filter_var, and assert the library reproduces them — plus the
+  # live corpus parity test and the differential fuzzer (mix test --include php).
+  differential:
+    name: differential vs PHP ${{ matrix.php }}
+    needs: php-versions
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ${{ fromJson(needs.php-versions.outputs.cycles) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+      - run: php -v
+      - run: mix deps.get
+      - name: Regenerate golden from this PHP and run live + fuzz parity
+        run: |
+          mix php.golden
+          mix test --include php
+      - name: Upload golden verdicts for this PHP version
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-php-${{ matrix.php }}
+          path: test/fixtures/golden/*.tsv
+          if-no-files-found: error
+
+  # ── Canary: the newest stable Elixir (on current-stable OTP), so a new Elixir
+  # release that breaks the library surfaces here. A new *OTP* is covered by the
+  # newest-otp-watch job below. (scheduled/manual only — a watch, not a gate.) ──
+  canary:
+    name: Latest Elixir canary (OTP 28)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Resolve the latest *stable* Elixir (exclude -rc/pre-releases to avoid
+      # noise), on current-stable OTP. A new OTP major is the one rare manual
+      # bump; new Elixir minors are picked up here automatically.
+      - id: latest
+        run: |
+          set -uo pipefail
+          v=$(git ls-remote --tags --refs https://github.com/elixir-lang/elixir.git 'v1.*' 2>/dev/null \
+              | awk -F/ '{print $NF}' | grep -E '^v1\.[0-9]+\.[0-9]+$' | sort -V | tail -1 | tr -d v)
+          [ -z "$v" ] && v="1.19.5"
+          echo "elixir=$v" >> "$GITHUB_OUTPUT"
+          echo "Latest stable Elixir: $v"
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: ${{ steps.latest.outputs.elixir }}
+      # The test env has no dependencies, so this exercises only the library on
+      # the newest Elixir (and OTP 28's PCRE) — not the dev tooling.
+      - run: mix test
+
+  # ── Newest-OTP watch: the project's #1 long-term divergence vector is a new
+  # OTP's PCRE2 shipping newer Unicode tables (\pL\pN classification on the
+  # unicode path). Run the golden regression on the newest stable OTP, so a drift
+  # from PHP's frozen verdicts surfaces on its own. No PHP needed: the committed
+  # golden IS PHP's testimony, so a divergent OTP fails `mix test` directly.
+  # Soft-skips until Elixir publishes a build for a brand-new OTP. ──────────────
+  newest-otp-watch:
+    name: Newest stable OTP watch
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - id: resolve
+        run: |
+          set -uo pipefail
+          # Newest stable OTP major (final releases only; drop -rc/pre).
+          otp=$(git ls-remote --tags --refs https://github.com/erlang/otp.git 'OTP-*' 2>/dev/null \
+              | awk -F/ '{print $NF}' | sed 's/^OTP-//' | grep -E '^[0-9]+(\.[0-9]+)*$' \
+              | sort -V | tail -1)
+          [ -z "$otp" ] && otp="28"
+          otp_major="${otp%%.*}"
+          # Newest stable Elixir (exclude -rc/pre, as the canary does).
+          elixir=$(git ls-remote --tags --refs https://github.com/elixir-lang/elixir.git 'v1.*' 2>/dev/null \
+              | awk -F/ '{print $NF}' | grep -E '^v1\.[0-9]+\.[0-9]+$' | sort -V | tail -1 | tr -d v)
+          [ -z "$elixir" ] && elixir="1.19.5"
+          echo "otp=$otp_major" >> "$GITHUB_OUTPUT"
+          echo "elixir=$elixir" >> "$GITHUB_OUTPUT"
+          echo "Newest stable OTP major: $otp_major ; newest stable Elixir: $elixir"
+      # continue-on-error makes a missing Elixir-for-new-OTP build a soft-skip,
+      # not a red run (so it doesn't open a spurious issue before Elixir catches up).
+      - id: beam
+        continue-on-error: true
+        uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ steps.resolve.outputs.otp }}
+          elixir-version: ${{ steps.resolve.outputs.elixir }}
+      - name: Golden regression on the newest OTP
+        if: steps.beam.outcome == 'success'
+        run: mix test
+      - name: Soft-skip note when no Elixir build exists for the newest OTP yet
+        if: steps.beam.outcome != 'success'
+        run: echo "::notice::Skipped — no precompiled Elixir ${{ steps.resolve.outputs.elixir }} for OTP ${{ steps.resolve.outputs.otp }} yet; will retry next week."
+      - name: Open or update a tracking issue on divergence
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Golden parity failed on the newest stable OTP"
+          body="\`mix test\` failed on the newest stable OTP (${{ steps.resolve.outputs.otp }}). A new OTP's PCRE2/Unicode tables may have diverged from the committed PHP golden — the project's #1 long-term divergence vector. Re-vet the unicode path and the OTP matrix. Run: $RUN_URL"
+          num=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$num" ]; then
+            gh issue comment "$num" --body "Still failing (re-checked). $body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
+
+  # ── Make scheduled failures visible: open/refresh a tracking issue ─────────
+  notify:
+    name: Report scheduled-run failure
+    if: failure() && github.event_name == 'schedule'
+    needs: [quality, test, php-versions, differential, canary]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Scheduled self-test failed"
+          body="The weekly self-test failed — likely a new PHP patch changed behaviour, or a new Elixir/OTP release broke the build (canary). Investigate: $RUN_URL"
+          num=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$num" ]; then
+            gh issue comment "$num" --body "Still failing (re-checked). $body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

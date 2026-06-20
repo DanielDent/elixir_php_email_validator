@@ -1,0 +1,288 @@
+defmodule ElixirPhpEmailValidator do
+  @moduledoc """
+  A bug-for-bug compatible Elixir port of PHP's
+  `filter_var($email, FILTER_VALIDATE_EMAIL)`.
+
+  This library answers exactly one question, the same way PHP does:
+
+      iex> ElixirPhpEmailValidator.valid?("a@b.c")
+      true
+      iex> ElixirPhpEmailValidator.valid?("a@b")
+      false
+
+  It is **not** an RFC 5321/5322 validator, and it is intentionally **not**
+  "correct" in any abstract sense. Its only goal is to return the *same*
+  boolean that PHP's `filter_var/2` returns for the *same* input — including
+  PHP's surprising behaviours (a bare IP like `user@1.2.3.4` is rejected, but
+  a bracketed literal `user@[1.2.3.4]` is accepted; a bare space is illegal
+  even inside a quoted local part, but a backslash-escaped space is fine;
+  etc.). See the compatibility guide and the quirks catalog for the full list.
+
+  ## How it works (why it is faithful)
+
+  PHP implements `FILTER_VALIDATE_EMAIL` in C, in
+  [`ext/filter/logical_filters.c`](https://github.com/php/php-src/blob/PHP-8.5/ext/filter/logical_filters.c),
+  function `php_filter_validate_email`. The algorithm is:
+
+    1. Reject the input if it is longer than **320 bytes** (octets).
+    2. Match it against a single, anchored PCRE regex with the inline flags
+       `i` (caseless) and `D` (dollar-end-only). There are two regexes: an
+       ASCII one used by default, and a Unicode-aware one (adding `\\pL`/`\\pN`
+       to the local part, plus the `u` / PCRE_UTF8+PCRE_UCP flag) used only
+       when the `FILTER_FLAG_EMAIL_UNICODE` flag is set.
+    3. Return the string on match, `false` otherwise.
+
+  This module vendors **the exact PHP regex literals**, byte-for-byte, in
+  `priv/php/regexp1.full` (default) and `priv/php/regexp0.full` (unicode), and
+  derives both the pattern *and* the `:re` options from them at compile time —
+  so the vendored literal is the single source of truth. The flag translation
+  is mechanical:
+
+  | PHP inline flag            | Erlang `:re` option   |
+  | -------------------------- | --------------------- |
+  | `i` (caseless)             | `:caseless`           |
+  | `D` (PCRE_DOLLAR_ENDONLY)  | `:dollar_endonly`     |
+  | `u` (PCRE_UTF8 + UCP)      | `:unicode`, `:ucp`    |
+
+  Both PHP (PCRE2) and Erlang/OTP's `:re` are PCRE-family engines, so the same
+  pattern produces the same matches. The library matches on the **raw bytes**
+  of the input (exactly as PHP's `pcre2_match` does), and — for the unicode
+  path — treats an input that is not valid UTF-8 as a non-match, which is what
+  PHP does when `pcre2_match` reports a UTF-8 error.
+
+  Faithfulness is *proven*, not asserted: the test suite generates golden
+  verdicts from real `php` binaries across a PHP version matrix and asserts
+  this module reproduces them exactly. See `mix php.golden` and the
+  `COMPATIBILITY.md` guide.
+
+  ## Performance and untrusted input
+
+  Validation is a single anchored PCRE match. For ordinary addresses it is
+  effectively instant, but the vendored pattern (PHP's own) contains nested
+  quantifiers in the domain sub-pattern, so a *deliberately crafted* input —
+  even a short one, well under the 320-byte gate — can drive PCRE into heavy
+  backtracking: a worst-case string costs on the order of ~200 ms inside
+  `:re.run` before the engine's internal step limit aborts the match. The
+  **verdict is still correct** (such inputs are rejected, exactly as PHP rejects
+  them); the cost is purely CPU time. Note that the 320-byte gate bounds input
+  *length*, not per-call CPU.
+
+  Two consequences worth knowing for a hot path that validates **untrusted**
+  input at scale:
+
+    * `:re.run` runs in a NIF that does not yield, so a pathological input pins
+      a scheduler thread for the duration. If you validate attacker-controlled
+      strings at high volume, run validation off the request-serving schedulers
+      (e.g. a `Task` supervised on a separate pool) and/or apply a timeout and
+      rate-limiting upstream.
+    * This library intentionally does **not** pass `:re` a `match_limit`. A limit
+      low enough to cap the worst case can also reject a *legitimate*
+      many-label address that PHP accepts — i.e. it would break exact parity,
+      which is this library's entire contract. Bounding CPU is therefore left to
+      the caller, where it can be done without sacrificing faithfulness.
+
+  ## Provenance / copyright
+
+  The vendored regex derives from Michael Rushton's email validator and is
+  redistributed by PHP under its own terms; Rushton's copyright notice is
+  preserved in `NOTICE`. `source_info/0` reports the exact php-src ref and
+  checksums this build tracks.
+  """
+
+  alias ElixirPhpEmailValidator.PhpSource
+
+  # --- Vendored PHP source (single source of truth) ------------------------
+  #
+  # The library reads the exact PHP regex *literals* ("/pattern/flags", as they
+  # appear in php_filter_validate_email) and the provenance manifest, all
+  # regenerated by `mix php.extract`. Both the pattern and the matching options
+  # are derived from the literal, so they can never disagree with PHP's flags.
+  @priv_php Path.join([__DIR__, "..", "priv", "php"])
+  @regexp1_full_path Path.join(@priv_php, "regexp1.full")
+  @regexp0_full_path Path.join(@priv_php, "regexp0.full")
+  @manifest_path Path.join(@priv_php, "MANIFEST.json")
+
+  @external_resource @regexp1_full_path
+  @external_resource @regexp0_full_path
+  @external_resource @manifest_path
+
+  @regexp1_full File.read!(@regexp1_full_path)
+  @regexp0_full File.read!(@regexp0_full_path)
+  @manifest File.read!(@manifest_path)
+
+  # Pattern + options derived from the vendored literals at compile time. An
+  # unvetted upstream flag makes PhpSource.flags_to_re_opts/1 raise *here*, so a
+  # silent divergence becomes a loud compile error.
+  @regexp1 PhpSource.pattern(@regexp1_full)
+  @regexp0 PhpSource.pattern(@regexp0_full)
+  @ascii_opts PhpSource.options(@regexp1_full)
+  @unicode_opts PhpSource.options(@regexp0_full)
+
+  # PHP: `if (Z_STRLEN_P(value) > 320) RETURN_VALIDATION_FAILED;`
+  @max_length 320
+
+  # Provenance, derived at compile time from the vendored bytes/manifest so it
+  # can never disagree with what is actually compiled into this build.
+  @regexp1_sha256 Base.encode16(:crypto.hash(:sha256, @regexp1), case: :lower)
+  @regexp0_sha256 Base.encode16(:crypto.hash(:sha256, @regexp0), case: :lower)
+  @php_baseline %{
+    source_file: PhpSource.manifest_field(@manifest, "file"),
+    function: PhpSource.manifest_field(@manifest, "function"),
+    php_ref: PhpSource.manifest_field(@manifest, "ref"),
+    upstream_url: PhpSource.manifest_field(@manifest, "blob_url"),
+    vendored_at: PhpSource.manifest_field(@manifest, "vendored_at"),
+    max_length: @max_length
+  }
+
+  @typedoc "Options for `valid?/2` and `validate/2`."
+  @type opts :: [unicode: boolean()]
+
+  @doc """
+  Returns `true` when PHP's `filter_var(email, FILTER_VALIDATE_EMAIL)` would
+  accept `email`, and `false` otherwise.
+
+  ## Options
+
+    * `:unicode` (boolean, default `false`) — when `true`, mirrors PHP's
+      `FILTER_FLAG_EMAIL_UNICODE`, allowing Unicode letters/numbers in the
+      **local part** (the domain still must be ASCII).
+
+  ## Input type
+
+  Pass a **UTF-8 binary** (an Elixir string). The `@spec` says `binary()`, so
+  Dialyzer and Elixir's compile-time type checker can flag a non-binary argument
+  before it ever runs. At runtime the function stays *total* — like PHP's
+  `filter_var`, which never raises — so any non-binary value simply returns
+  `false`. This is the one spot where the port deliberately does **not** imitate
+  PHP: PHP coerces scalars (`filter_var(123, ...)` validates `"123"`), whereas
+  this library does not coerce. In particular a charlist such as `~c"a@b.c"`
+  returns `false`; convert it with `to_string/1` first.
+
+  ## Examples
+
+      iex> ElixirPhpEmailValidator.valid?("first.last@iana.org")
+      true
+
+      iex> ElixirPhpEmailValidator.valid?("user@1.2.3.4")
+      false
+
+      iex> ElixirPhpEmailValidator.valid?("user@[1.2.3.4]")
+      true
+
+      iex> ElixirPhpEmailValidator.valid?("日本語@example.com")
+      false
+
+      iex> ElixirPhpEmailValidator.valid?("日本語@example.com", unicode: true)
+      true
+
+      iex> ElixirPhpEmailValidator.valid?(~c"a@b.c")
+      false
+  """
+  @spec valid?(binary(), opts()) :: boolean()
+  def valid?(email, opts \\ [])
+
+  def valid?(email, opts) when is_binary(email) do
+    if byte_size(email) > @max_length do
+      false
+    else
+      mp = if Keyword.get(opts, :unicode, false), do: compiled(:unicode), else: compiled(:ascii)
+
+      try do
+        :re.run(email, mp, [{:capture, :none}]) == :match
+      catch
+        # In unicode mode, an input that is not valid UTF-8 makes :re.run raise
+        # `badarg`. PHP's pcre2_match reports a UTF-8 error there and filter_var
+        # returns false, so a non-match is the faithful result.
+        :error, :badarg -> false
+      end
+    end
+  end
+
+  def valid?(_other, _opts), do: false
+
+  @doc """
+  Mirrors PHP's return convention: `{:ok, email}` when valid (PHP returns the
+  string), `:error` when invalid (PHP returns `false`).
+
+  Like `valid?/2`, this expects a binary; see its "Input type" section.
+
+  ## Examples
+
+      iex> ElixirPhpEmailValidator.validate("a@b.c")
+      {:ok, "a@b.c"}
+
+      iex> ElixirPhpEmailValidator.validate("a@b")
+      :error
+  """
+  @spec validate(binary(), opts()) :: {:ok, binary()} | :error
+  def validate(email, opts \\ []) do
+    if valid?(email, opts), do: {:ok, email}, else: :error
+  end
+
+  @doc """
+  Returns provenance metadata for the vendored PHP regex: which php-src
+  ref/version this port tracks, the upstream file/function, and the SHA-256
+  checksums of the two vendored patterns. Read from `priv/php/MANIFEST.json` and
+  the vendored bytes at compile time, so it always matches this build.
+
+  ## Example
+
+      iex> info = ElixirPhpEmailValidator.source_info()
+      iex> info.function
+      "php_filter_validate_email"
+      iex> byte_size(info.regexp1_sha256)
+      64
+  """
+  @spec source_info() :: %{
+          source_file: String.t(),
+          function: String.t(),
+          php_ref: String.t(),
+          upstream_url: String.t(),
+          vendored_at: String.t(),
+          max_length: non_neg_integer(),
+          regexp1_sha256: String.t(),
+          regexp0_sha256: String.t()
+        }
+  def source_info do
+    Map.merge(@php_baseline, %{
+      regexp1_sha256: @regexp1_sha256,
+      regexp0_sha256: @regexp0_sha256
+    })
+  end
+
+  # --- Internals -----------------------------------------------------------
+
+  # Lazily compile each pattern once per node and cache in :persistent_term.
+  # Compiling at *runtime* (rather than baking the compiled program into the
+  # .beam) guarantees the program matches the PCRE of the OTP actually running.
+  defp compiled(mode) do
+    key = {__MODULE__, :compiled, mode}
+
+    case :persistent_term.get(key, nil) do
+      nil ->
+        mp = compile!(mode)
+        :persistent_term.put(key, mp)
+        mp
+
+      mp ->
+        mp
+    end
+  end
+
+  defp compile!(mode) do
+    {pattern, opts} =
+      case mode do
+        :ascii -> {@regexp1, @ascii_opts}
+        :unicode -> {@regexp0, @unicode_opts}
+      end
+
+    case :re.compile(pattern, opts) do
+      {:ok, mp} ->
+        mp
+
+      {:error, reason} ->
+        raise "the vendored PHP #{mode} pattern failed to compile under this OTP's PCRE: " <>
+                inspect(reason)
+    end
+  end
+end

@@ -1,0 +1,37 @@
+name: Dependabot auto-merge
+
+# Lets Dependabot's safe updates merge themselves once CI passes, so the only
+# thing a maintainer routinely approves is an actual release. "Safe" =
+#   * any dev/test dependency bump (the runtime library has no deps; these never
+#     ship and CI gates breakage), and
+#   * any non-major GitHub Actions bump.
+# A *major* GitHub Actions bump touches CI/release infrastructure, so it waits
+# for a human. Dependabot's cooldown (.github/dependabot.yml) already aged every
+# update before it got here; auto-merge still waits for required CI checks.
+
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    runs-on: ubuntu-latest
+    if: >
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.repository == 'DanielDent/elixir_php_email_validator'
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2.5.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable auto-merge for safe updates
+        if: >
+          steps.meta.outputs.dependency-type == 'direct:development' ||
+          steps.meta.outputs.update-type != 'version-update:semver-major'
+        run: gh pr merge --auto --squash "${{ github.event.pull_request.html_url }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

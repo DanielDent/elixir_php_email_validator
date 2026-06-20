@@ -1,0 +1,36 @@
+elixir_php_email_validator — third-party attributions
+====================================================
+
+This package reproduces, byte-for-byte, the regular expressions that PHP uses
+to implement `filter_var($email, FILTER_VALIDATE_EMAIL)`. Those regexes are
+vendored in `priv/php/regexp0.pattern` and `priv/php/regexp1.pattern`, and the
+full upstream C function is vendored for reference in
+`priv/php/logical_filters.c`.
+
+The regexes originate from PHP's source tree:
+
+    php-src — ext/filter/logical_filters.c — php_filter_validate_email()
+    https://github.com/php/php-src/blob/PHP-8.5/ext/filter/logical_filters.c
+
+PHP is distributed under the PHP License (https://www.php.net/license/).
+
+Within that file, PHP records that the regex is based on work by Michael
+Rushton and preserves the following copyright notice, which we likewise
+preserve here:
+
+    The regex below is based on a regex by Michael Rushton. However, it is not
+    identical. [PHP] changed it to only consider routeable addresses as valid.
+    Michael's regex considers a@b a valid address which conflicts with section
+    2.3.5 of RFC 5321 [...].
+
+    Michael's regex carries this copyright:
+
+      Copyright © Michael Rushton 2009-10
+      http://squiloople.com/
+      Feel free to use and redistribute this code. But please keep this
+      copyright notice.
+
+The Elixir source code in `lib/`, the test suite, the tooling, and the
+documentation are original to this package and are licensed under the MIT
+License (see LICENSE). The vendored regex bytes are reproduced under the terms
+above.

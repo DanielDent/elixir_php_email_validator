@@ -1,0 +1,20 @@
+# Mix / Elixir build artifacts
+/_build/
+/cover/
+/deps/
+/doc/
+/.fetch
+erl_crash.dump
+*.ez
+*.beam
+/config/*.secret.exs
+.elixir_ls/
+
+# Editor / OS
+.DS_Store
+
+# Build artifacts
+*.tar
+
+# Dialyzer PLTs
+/priv/plts/

@@ -1,0 +1,70 @@
+name: Upstream drift detector
+
+# Early-warning system for "did PHP change FILTER_VALIDATE_EMAIL?". Re-fetches
+# ext/filter/logical_filters.c from php-src for each supported release branch,
+# re-extracts the regex, and fails if it no longer matches the vendored copy.
+# A red run here means PHP changed the validator upstream — re-vet, then run
+# `mix php.extract <ref>` and `mix php.test`, and cut a new release.
+
+on:
+  schedule:
+    # Weekly, Mondays 06:00 UTC
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write # to open/update a tracking issue when drift is detected
+
+jobs:
+  drift:
+    name: Compare vendored regex vs live php-src
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "28"
+          elixir-version: "1.19"
+      - run: mix deps.get
+      # Derive the php-src branches to check from the currently-supported PHP
+      # versions, so a newly-released series (e.g. PHP-8.6) is watched without a
+      # config change. `master` covers the in-development version.
+      - name: Determine supported php-src branches
+        id: refs
+        run: |
+          set -euo pipefail
+          today=$(date -u +%F)
+          # endoflife.date legacy /api/php.json. If it is ever retired/reshaped,
+          # discovery falls back to the pinned list below (ci.yml's php-versions
+          # job escalates a sustained fallback on its weekly schedule); migrate to
+          # the v1 API /api/v1/products/php (.result.releases[].name / .isEol).
+          branches=$(curl -fsSL --max-time 20 https://endoflife.date/api/php.json \
+            | jq -r --arg today "$today" \
+                '[.[] | select((.eol | type == "string") and (.eol > $today)) | "PHP-\(.cycle)"] | join(" ")' \
+            || echo "")
+          if [ -z "$branches" ]; then
+            echo "::warning::endoflife.date unavailable; using fallback branch list"
+            branches="PHP-8.2 PHP-8.3 PHP-8.4 PHP-8.5"
+          fi
+          echo "refs=$branches master" >> "$GITHUB_OUTPUT"
+          echo "Checking refs: $branches master"
+      - name: Check for upstream regex drift
+        run: mix php.drift ${{ steps.refs.outputs.refs }}
+
+      # A scheduled red run only emails the last cron-editor; an issue is
+      # assignable and visible. De-duped by title so re-runs don't pile up.
+      - name: Open or update a tracking issue on drift
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Upstream PHP FILTER_VALIDATE_EMAIL regex drift detected"
+          body="The weekly drift detector failed: PHP changed php_filter_validate_email upstream, so the vendored regex no longer matches a supported release. Re-vet the upstream diff, then run \`mix php.extract <ref>\` and \`mix php.test\`, and cut a release. Failed run: $RUN_URL"
+          num=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$num" ]; then
+            gh issue comment "$num" --body "Still drifting (re-checked). $body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
