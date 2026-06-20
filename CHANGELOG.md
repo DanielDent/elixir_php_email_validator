@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.0 (2026-06-20)
+
+
+### Features
+
+* initial release of elixir_php_email_validator ([da84a11](https://github.com/DanielDent/elixir_php_email_validator/commit/da84a1139e00595edc8b106aacb72ac859e06aa9))
+
+## Changelog
+
 This file is maintained automatically by
 [release-please](https://github.com/googleapis/release-please) from
 [Conventional Commits](https://www.conventionalcommits.org/). Please do not edit
