@@ -41,7 +41,7 @@ jobs:
     steps:
       # SHA-pinned: this job has `contents: write` and creates the tag/commit a
       # release is built from, so a moved tag must not be able to swap in code.
-      - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4.4.1
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         id: rp
         with:
           # Uses release-please-config.json + .release-please-manifest.json.
@@ -65,7 +65,7 @@ jobs:
       # to immutable commit SHAs (a moved tag can't swap in malicious code).
       # Dependabot keeps these current — on a cooldown so a malicious release
       # has time to be caught before it is proposed. See RELEASING.md.
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
         with:
           otp-version: "28"
