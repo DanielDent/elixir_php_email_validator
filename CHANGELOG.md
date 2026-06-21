@@ -7,19 +7,17 @@
 
 * release 1.0.6 ([60b0add](https://github.com/DanielDent/elixir_php_email_validator/commit/60b0addd1c959d46d8ab2fd0c0f6ba160d345f7f))
 
-## [1.0.5](https://github.com/DanielDent/elixir_php_email_validator/compare/v1.0.4...v1.0.5) (2026-06-21)
+## [1.0.5](https://github.com/DanielDent/elixir_php_email_validator/compare/v1.0.3...v1.0.5) (2026-06-21)
 
 
 ### Miscellaneous Chores
 
 * release 1.0.5 ([#16](https://github.com/DanielDent/elixir_php_email_validator/issues/16)) ([42f2d2b](https://github.com/DanielDent/elixir_php_email_validator/commit/42f2d2b03bd071855691d7e1d95ac313875b725c))
 
-## [1.0.4](https://github.com/DanielDent/elixir_php_email_validator/compare/v1.0.3...v1.0.4) (2026-06-21)
+## 1.0.4 — not released (2026-06-21)
 
-
-### Miscellaneous Chores
-
-* release 1.0.4 ([#12](https://github.com/DanielDent/elixir_php_email_validator/issues/12)) ([fcdbf25](https://github.com/DanielDent/elixir_php_email_validator/commit/fcdbf253ad9286e22a0ca4781c3390956c2bf86e))
+> The release pipeline failed at build + attest before publish; v1.0.4 was never
+> tagged or published to Hex. Superseded by 1.0.5.
 
 ## [1.0.3](https://github.com/DanielDent/elixir_php_email_validator/compare/v1.0.2...v1.0.3) (2026-06-21)
 
