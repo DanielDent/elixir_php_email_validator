@@ -17,20 +17,22 @@ need to do.
    └───────────────────────────────┘
                  │  you review + merge the release PR
                  ▼
-   release-please tags vX.Y.Z + creates the GitHub Release (the durable store)
+   release-please tags vX.Y.Z + creates the GitHub Release as a DRAFT (mutable)
                  │
                  ▼
    provenance (_release-build.yml) — KEYLESS, isolated VM (SLSA Build L3):
      build + attest the package, docs, and source tarballs, then attach all
-     three to the GitHub Release
+     three to the DRAFT Release
                  │
                  ▼
    publish (release-please.yml) — gh + curl only, the sole holder of the Hex key:
      download the assets → VERIFY the whole attested set (or abort, publishing
-     nothing) → idempotently POST the exact package + docs bytes to Hex
+     nothing) → idempotently POST package + docs to Hex → FLIP the Release to
+     published (GitHub locks it immutable, with the attested assets baked in,
+     only after Hex succeeded)
                  │
                  ▼
-   GitHub Release (attested pkg + docs + source)  +  hex.pm  +  hexdocs.pm
+   immutable GitHub Release (attested pkg+docs+source)  +  hex.pm  +  hexdocs.pm
 ```
 
 Separately, **`drift.yml`** runs weekly and fails if PHP changes the upstream
@@ -217,14 +219,19 @@ and a byte-reproducible **source** archive (`git archive` of the build commit) �
 `actions/attest-build-provenance` (a **Sigstore-signed [SLSA](https://slsa.dev) Build
 L3 provenance attestation**: keyless via the public-good Fulcio CA + Rekor, no stored
 signing key). All three bind to the same repo/commit/workflow and are **attached to
-the GitHub Release** (the durable artifact store). The inline `publish` job — `gh` +
-`curl` only, the sole holder of the key — downloads them, **verifies the *complete*
-attested set** (any asset missing or unverified ⇒ it publishes **nothing**:
-fully-attested-set-or-nothing), then POSTs the **exact attested bytes** to Hex: the
-**package** idempotently (skip if already published with a matching checksum;
-hard-fail on divergent bytes) and the **docs** (both required — a partial write fails
-loudly, and a retry, pulling from the durable Release, converges). The published
-artifacts *are* the attested artifacts by construction — no rebuild. (`mix hex.publish`
+the DRAFT GitHub Release** (release-please creates it as a draft so assets can be
+attached before GitHub locks it immutable). The inline `publish` job — `gh` + `curl`
+only, the sole holder of the key — downloads them, **verifies the *complete* attested
+set** (any asset missing or unverified ⇒ it publishes **nothing**:
+fully-attested-set-or-nothing), then POSTs the **exact attested bytes** to Hex (the
+**package** idempotently — skip if already published with a matching checksum,
+hard-fail on divergent bytes — and the **docs**, both required), and **only then flips
+the Release to published**, which GitHub locks **immutable** with the attested assets
+baked in. So the same verify gate decides both the Hex publish and the Release, and
+the public immutable Release appears exactly when the package + docs are on Hex; a
+partial write fails loudly and a retry (the Release stays a mutable draft until it all
+succeeds) converges. The published artifacts *are* the attested artifacts by
+construction — no rebuild. (`mix hex.publish`
 always rebuilds in memory, so it is not used.) Anyone can verify any released
 artifact (needs the `gh` CLI) — e.g. the package fetched from Hex:
 

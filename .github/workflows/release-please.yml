@@ -84,7 +84,7 @@ jobs:
       name: hex-publish
       url: https://hex.pm/packages/elixir_php_email_validator
     permissions:
-      contents: read # gh release download
+      contents: write # download from the draft Release + flip it to published at the end
       attestations: read # gh attestation verify
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -202,6 +202,22 @@ jobs:
             --data-binary "@${docs}")
           echo "docs POST -> HTTP ${dcode}"
           case "${dcode}" in 200|201) echo "docs for ${version} published";; *) echo "::error::docs publish failed (HTTP ${dcode})"; cat dresp.txt; echo; exit 1;; esac
+      # Flip the Release to published LAST — only after the whole attested set verified
+      # AND both Hex POSTs succeeded. GitHub then locks it immutable with the attested
+      # assets baked in, so the public Release appears exactly when (and only when) the
+      # package + docs are on Hex. Idempotent: a no-op if it was already published.
+      - name: Publish the GitHub Release (immutable, assets locked in)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="v${{ steps.assets.outputs.version }}"
+          if [ "$(gh release view "$tag" --json isDraft --jq .isDraft)" = "true" ]; then
+            gh release edit "$tag" --draft=false
+            echo "published GitHub Release $tag (now immutable, with attested assets)"
+          else
+            echo "GitHub Release $tag already published"
+          fi
 
   # Escalate a failed release loudly (the project's norm: human-actionable failures
   # open a tracking issue) — a red run alone is too easy to miss.
