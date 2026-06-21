@@ -281,8 +281,8 @@ jobs:
           # Reap every OTHER draft on this tag (re-cut orphans). Tolerate an already-gone
           # draft (a concurrent reap / manual delete) so a transient 404 can't wedge the
           # run; but if a delete fails AND the draft still exists, fail loudly — a green
-          # run must mean EXACTLY ONE release for the tag. Never touches `keep`, and the
-          # published release is never in draft_ids, so it can never be deleted.
+          # run must mean EXACTLY ONE release for the tag. Never touches `keep` (even if
+          # `keep` started as a draft and was just promoted), so it can never be deleted.
           for id in "${draft_ids[@]:-}"; do
             [ -n "$id" ] || continue
             [ "$id" = "$keep" ] && continue
