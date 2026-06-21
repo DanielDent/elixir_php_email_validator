@@ -288,10 +288,15 @@ jobs:
             [ "$id" = "$keep" ] && continue
             if gh api -X DELETE "repos/${OWNER_REPO}/releases/${id}" >/dev/null 2>&1; then
               echo "reaped orphan draft release ${id} for ${TAG}"
-            elif gh api "repos/${OWNER_REPO}/releases/${id}" >/dev/null 2>&1; then
-              echo "::error::failed to delete orphan draft ${id} for ${TAG} and it still exists — aborting"; exit 1
             else
-              echo "orphan draft ${id} already gone — ok"
+              # Only tolerate "already gone" (404). Any other failure means we can't
+              # guarantee convergence to exactly one release.
+              status=$(gh api -i "repos/${OWNER_REPO}/releases/${id}" 2>/dev/null | head -n1 | awk '{print $2}' || true)
+              if [ "$status" = "404" ]; then
+                echo "orphan draft ${id} already gone — ok"
+              else
+                echo "::error::failed to delete orphan draft ${id} for ${TAG} (GET status ${status:-unknown}) — aborting"; exit 1
+              fi
             fi
           done
 
