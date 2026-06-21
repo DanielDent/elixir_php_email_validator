@@ -4,11 +4,15 @@ name: Release
 #   1. release-please watches `main` for Conventional Commits and maintains an
 #      open "release PR" that bumps the version (mix.exs) and updates CHANGELOG.
 #   2. When you merge that PR, release-please tags + creates a GitHub Release.
-#   3. The `publish` job then publishes that version to Hex.pm.
+#   3. The `publish` job then calls the `_release-build.yml` reusable workflow,
+#      which builds + attests + publishes that version to Hex.pm.
 #
-# The publish job runs in the protected `hex-publish` GitHub Environment, so the
-# Hex credential is never exposed to pull requests, forks, or logs, and only the
-# real release path can use it. See RELEASING.md for the one-time setup.
+# The build/publish runs in the protected `hex-publish` GitHub Environment (declared
+# inside the reusable workflow), so the Hex credential is never exposed to pull
+# requests, forks, or logs, and only the real release path can use it. Running it in
+# a reusable workflow isolates the Sigstore signing identity from the build steps —
+# that is what makes the provenance SLSA Build L3. See RELEASING.md and
+# _release-build.yml.
 #
 # NOTE: the publish job and release-please MUST live in the same workflow run.
 # release-please creates the tag/release with GITHUB_TOKEN, and events raised by
@@ -48,37 +52,23 @@ jobs:
           # GITHUB_TOKEN is sufficient — no personal token required.
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  # The build + attest + publish runs in the `_release-build.yml` REUSABLE workflow
+  # so it executes on its own isolated, ephemeral runner VM the caller's steps can't
+  # reach — that isolation of the Sigstore signing identity from the build steps is
+  # what makes the attestation SLSA Build L3. A reusable workflow invoked here runs
+  # inside this same release run, preserving the "publish shares the run with
+  # release-please" requirement above.
   publish:
     name: Publish to Hex.pm
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch' }}
-    runs-on: ubuntu-latest
-    # All Hex publishing happens here, behind environment protection rules.
-    environment:
-      name: hex-publish
-      url: https://hex.pm/packages/elixir_php_email_validator
+    uses: ./.github/workflows/_release-build.yml
+    # The caller sets the token ceiling passed down to the reusable workflow (the
+    # callee can only narrow these, never elevate). `environment:`/`runs-on:`/`steps:`
+    # are not valid on a job that calls a reusable workflow — they live in the callee.
     permissions:
       contents: read
-      # id-token: write   # ← uncomment when switching to Hex OIDC trusted publishing
-    steps:
-      # This is the ONLY job with the Hex credential, so its actions are pinned
-      # to immutable commit SHAs (a moved tag can't swap in malicious code).
-      # Dependabot keeps these current — on a cooldown so a malicious release
-      # has time to be caught before it is proposed. See RELEASING.md.
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
-        with:
-          otp-version: "28"
-          elixir-version: "1.19"
-      - run: mix deps.get
-      # Final gate: never publish a version that fails the golden regression.
-      - run: mix test
-      - name: Publish package + docs to Hex
-        run: mix hex.publish --yes
-        env:
-          # A least-privilege Hex API key stored as an Environment secret.
-          # This is the most secure option available today; Hex.pm OIDC
-          # "trusted publishing" is on their roadmap but not yet GA (as of
-          # 2026-06). When it ships, delete this secret, add `id-token: write`
-          # above, and follow RELEASING.md — no code-structure change needed.
-          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+      id-token: write
+      attestations: write
+    # No `secrets:` — HEX_API_KEY is an environment secret of `hex-publish`,
+    # resolved inside the reusable workflow by its job-level `environment:`.

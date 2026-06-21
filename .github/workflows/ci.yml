@@ -19,8 +19,8 @@ jobs:
     name: Quality (format · credo · dialyzer)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.3
-      - uses: erlef/setup-beam@v1
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
         with:
           otp-version: "28"
           elixir-version: "1.19"
@@ -28,7 +28,7 @@ jobs:
       - run: mix format --check-formatted
       - run: mix credo --strict
       - name: Cache Dialyzer PLT
-        uses: actions/cache@v5
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: priv/plts
           key: plt-${{ runner.os }}-otp28-elixir1.19-${{ hashFiles('**/mix.lock') }}
@@ -51,8 +51,8 @@ jobs:
           - { elixir: "1.17", otp: "27" }
           - { elixir: "1.19", otp: "28" }
     steps:
-      - uses: actions/checkout@v6.0.3
-      - uses: erlef/setup-beam@v1
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
         with:
           otp-version: ${{ matrix.otp }}
           elixir-version: ${{ matrix.elixir }}
@@ -126,12 +126,12 @@ jobs:
       matrix:
         php: ${{ fromJson(needs.php-versions.outputs.cycles) }}
     steps:
-      - uses: actions/checkout@v6.0.3
-      - uses: erlef/setup-beam@v1
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
         with:
           otp-version: "28"
           elixir-version: "1.19"
-      - uses: shivammathur/setup-php@v2
+      - uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # 2.37.2
         with:
           php-version: ${{ matrix.php }}
           coverage: none
@@ -142,7 +142,7 @@ jobs:
           mix php.golden
           mix test --include php
       - name: Upload golden verdicts for this PHP version
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: golden-php-${{ matrix.php }}
           path: test/fixtures/golden/*.tsv
@@ -156,7 +156,7 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       # Resolve the latest *stable* Elixir (exclude -rc/pre-releases to avoid
       # noise), on current-stable OTP. A new OTP major is the one rare manual
       # bump; new Elixir minors are picked up here automatically.
@@ -168,7 +168,7 @@ jobs:
           [ -z "$v" ] && v="1.19.5"
           echo "elixir=$v" >> "$GITHUB_OUTPUT"
           echo "Latest stable Elixir: $v"
-      - uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
         with:
           otp-version: "28"
           elixir-version: ${{ steps.latest.outputs.elixir }}
@@ -190,7 +190,7 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - id: resolve
         run: |
           set -uo pipefail
@@ -211,7 +211,7 @@ jobs:
       # not a red run (so it doesn't open a spurious issue before Elixir catches up).
       - id: beam
         continue-on-error: true
-        uses: erlef/setup-beam@v1
+        uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
         with:
           otp-version: ${{ steps.resolve.outputs.otp }}
           elixir-version: ${{ steps.resolve.outputs.elixir }}
