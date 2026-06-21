@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.3](https://github.com/DanielDent/elixir_php_email_validator/compare/v1.0.2...v1.0.3) (2026-06-21)
+
+
+### Continuous Integration
+
+* harden release pipeline with SHA pinning and SLSA L3 build provenance ([a558908](https://github.com/DanielDent/elixir_php_email_validator/commit/a558908985d6cfde9bb99cd9c358e6caa85a7278))
+
 ## [1.0.2](https://github.com/DanielDent/elixir_php_email_validator/compare/v1.0.1...v1.0.2) (2026-06-20)
 
 
