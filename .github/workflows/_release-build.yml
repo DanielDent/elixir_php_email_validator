@@ -84,18 +84,27 @@ jobs:
             ${{ steps.source.outputs.src }}
       # Attach BOTH attested tarballs to the GitHub Release (the durable store the
       # publish job pulls from). --clobber makes a re-run / dispatch idempotent.
-      - name: Attach the attested tarballs to the GitHub Release
+      - name: Attach the attested tarballs to the draft Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           tag="${{ steps.build.outputs.tag }}"
-          # The Release normally already exists (release-please created it in this run).
-          # On a workflow_dispatch retry, create it from the (required) tag if absent so
-          # the store is always populated and dispatch retries converge. --verify-tag
-          # fails loudly + actionably if the underlying git tag is missing.
-          gh release view "$tag" >/dev/null 2>&1 \
-            || gh release create "$tag" --verify-tag --title "$tag" --notes "Release ${tag}"
+          # release-please creates the Release as a DRAFT (mutable). We attach the
+          # attested assets here but do NOT publish it — the inline `publish` job
+          # verifies the whole set + publishes to Hex first, then flips the Release to
+          # published (GitHub locks it immutable with the assets baked in). On a
+          # workflow_dispatch for a fresh tag, create the draft (--verify-tag fails
+          # loudly if the git tag is missing). If the Release is already published
+          # (immutable) from a prior successful run, its assets are locked in — skip.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            if [ "$(gh release view "$tag" --json isDraft --jq .isDraft)" != "true" ]; then
+              echo "Release $tag already published (immutable) — assets locked in; skipping attach"
+              exit 0
+            fi
+          else
+            gh release create "$tag" --draft --verify-tag --title "$tag" --notes "Release ${tag}"
+          fi
           gh release upload "$tag" \
             "${{ steps.build.outputs.pkg }}" \
             "${{ steps.docs.outputs.docs }}" \
