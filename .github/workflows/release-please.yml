@@ -84,7 +84,7 @@ jobs:
       name: hex-publish
       url: https://hex.pm/packages/elixir_php_email_validator
     permissions:
-      contents: write # download from the draft Release + flip it to published at the end
+      contents: write # download from the Release, flip it to published + reap orphan draft duplicates at the end
       attestations: read # gh attestation verify
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -202,22 +202,98 @@ jobs:
             --data-binary "@${docs}")
           echo "docs POST -> HTTP ${dcode}"
           case "${dcode}" in 200|201) echo "docs for ${version} published";; *) echo "::error::docs publish failed (HTTP ${dcode})"; cat dresp.txt; echo; exit 1;; esac
-      # Flip the Release to published LAST — only after the whole attested set verified
-      # AND both Hex POSTs succeeded. GitHub then locks it immutable with the attested
-      # assets baked in, so the public Release appears exactly when (and only when) the
-      # package + docs are on Hex. Idempotent: a no-op if it was already published.
-      - name: Publish the GitHub Release (immutable, assets locked in)
+      # Publish the Release LAST (only after the whole attested set verified AND both
+      # Hex POSTs succeeded), then CONVERGE the tag to EXACTLY ONE release: published,
+      # attested assets baked in, and any leftover DRAFT duplicates reaped.
+      #
+      # GitHub permits multiple releases to carry one tag as long as the extras are
+      # DRAFTS — a release-please re-cut creates exactly such an orphan. The old code
+      # flipped via `gh release view/edit <tag>`, but gh resolves an ambiguous tag to
+      # the PUBLISHED release, so it no-op'd and left the orphan draft behind. We
+      # instead enumerate every release for the tag via the REST API (which lists
+      # drafts too — this job has contents:write) and act on integer release IDs, which
+      # is unambiguous. REST uses the boolean `.draft` (gh --json uses `isDraft`).
+      # Uses only GH_TOKEN — never the Hex key. Idempotent + fail-closed + convergent.
+      - name: Publish the Release + reap orphan draft duplicates (immutable)
         env:
           GH_TOKEN: ${{ github.token }}
+          OWNER_REPO: ${{ github.repository }}
+          TAG: v${{ steps.assets.outputs.version }}
         run: |
           set -euo pipefail
-          tag="v${{ steps.assets.outputs.version }}"
-          if [ "$(gh release view "$tag" --json isDraft --jq .isDraft)" = "true" ]; then
-            gh release edit "$tag" --draft=false
-            echo "published GitHub Release $tag (now immutable, with attested assets)"
-          else
-            echo "GitHub Release $tag already published"
+
+          # List every release carrying this tag, with retry: a transient list failure
+          # here would otherwise fail the run AFTER Hex already has the bytes (a re-run /
+          # workflow_dispatch converges anyway, but a spurious red run is noise). With
+          # --paginate (no --slurp) gh emits one JSON array per page; `jq '.[]'` streams
+          # across them, so this is correct for one page or many.
+          ok=false
+          for i in 1 2 3; do
+            if gh api "repos/${OWNER_REPO}/releases" --paginate > releases.json; then ok=true; break; fi
+            echo "release list for ${TAG} failed (attempt $i); retrying…"; sleep 5
+          done
+          [ "$ok" = "true" ] || { echo "::error::could not list releases for ${TAG}"; exit 1; }
+
+          # Partition into published vs draft IDs. Built in THIS shell via process
+          # substitution (a pipe would build the arrays in a subshell and lose them
+          # under set -euo pipefail). `.id` is a number, `.draft` a boolean -> @tsv.
+          pub_ids=(); draft_ids=()
+          while IFS=$'\t' read -r id draft; do
+            [ -n "$id" ] || continue
+            if [ "$draft" = "true" ]; then draft_ids+=("$id"); else pub_ids+=("$id"); fi
+          done < <(jq -r --arg t "$TAG" '.[] | select(.tag_name == $t) | [.id, .draft] | @tsv' releases.json)
+
+          echo "tag ${TAG}: ${#pub_ids[@]} published, ${#draft_ids[@]} draft(s)"
+
+          # Fail-closed: the gate + asset download already ran against this tag, so a
+          # release MUST exist. Zero = torn state -> red run, never a silent pass.
+          if [ "${#pub_ids[@]}" -eq 0 ] && [ "${#draft_ids[@]}" -eq 0 ]; then
+            echo "::error::no release found for ${TAG} — aborting"; exit 1
           fi
+
+          # INVARIANT: at most one PUBLISHED release per tag. Two means a state we must
+          # NOT auto-resolve (published releases are immutable; deleting one is
+          # forbidden) — fail loudly for a human rather than guess.
+          if [ "${#pub_ids[@]}" -gt 1 ]; then
+            echo "::error::found ${#pub_ids[@]} PUBLISHED releases for ${TAG} (${pub_ids[*]}) — refusing to modify any; manual review"; exit 1
+          fi
+
+          if [ "${#pub_ids[@]}" -eq 1 ]; then
+            # Already published (a prior successful run, or a re-run / dispatch). Keep it
+            # exactly as-is; just garbage-collect any orphan drafts. Convergent no-op
+            # when there are none. This is the path that fixes the observed incident.
+            keep="${pub_ids[0]}"
+            echo "Release ${TAG} already published (id ${keep}) — reaping ${#draft_ids[@]} orphan draft(s)"
+          else
+            # Not yet published. `concurrency: release-<ref>` (cancel-in-progress:false)
+            # serializes runs on this ref, so exactly one draft exists here: the one
+            # `provenance` attached the verified set to. Promote it BY ID (no ambiguous
+            # tag resolution). >1 draft with none published is an unexpected, unserialized
+            # state — fail rather than guess which one carries the attested set.
+            if [ "${#draft_ids[@]}" -ne 1 ]; then
+              echo "::error::expected exactly one draft for unpublished ${TAG}, found ${#draft_ids[@]} (${draft_ids[*]:-}) — refusing to guess; manual review"; exit 1
+            fi
+            keep="${draft_ids[0]}"
+            gh api -X PATCH "repos/${OWNER_REPO}/releases/${keep}" -F draft=false >/dev/null
+            echo "published Release ${TAG} (id ${keep}; now immutable, attested assets baked in)"
+          fi
+
+          # Reap every OTHER draft on this tag (re-cut orphans). Tolerate an already-gone
+          # draft (a concurrent reap / manual delete) so a transient 404 can't wedge the
+          # run; but if a delete fails AND the draft still exists, fail loudly — a green
+          # run must mean EXACTLY ONE release for the tag. Never touches `keep`, and the
+          # published release is never in draft_ids, so it can never be deleted.
+          for id in "${draft_ids[@]:-}"; do
+            [ -n "$id" ] || continue
+            [ "$id" = "$keep" ] && continue
+            if gh api -X DELETE "repos/${OWNER_REPO}/releases/${id}" >/dev/null 2>&1; then
+              echo "reaped orphan draft release ${id} for ${TAG}"
+            elif gh api "repos/${OWNER_REPO}/releases/${id}" >/dev/null 2>&1; then
+              echo "::error::failed to delete orphan draft ${id} for ${TAG} and it still exists — aborting"; exit 1
+            else
+              echo "orphan draft ${id} already gone — ok"
+            fi
+          done
 
   # Escalate a failed release loudly (the project's norm: human-actionable failures
   # open a tracking issue) — a red run alone is too easy to miss.
