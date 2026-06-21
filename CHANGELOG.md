@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.5](https://github.com/DanielDent/elixir_php_email_validator/compare/v1.0.4...v1.0.5) (2026-06-21)
+
+
+### Miscellaneous Chores
+
+* release 1.0.5 ([#16](https://github.com/DanielDent/elixir_php_email_validator/issues/16)) ([42f2d2b](https://github.com/DanielDent/elixir_php_email_validator/commit/42f2d2b03bd071855691d7e1d95ac313875b725c))
+
 ## [1.0.4](https://github.com/DanielDent/elixir_php_email_validator/compare/v1.0.3...v1.0.4) (2026-06-21)
 
 
