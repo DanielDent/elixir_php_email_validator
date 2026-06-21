@@ -21,8 +21,10 @@ need to do.
                  │
                  ▼
    ┌───────────────────────────────┐
-   │ publish job (release-please.yml)     │  runs in the protected `hex-publish`
-   │  test → attest → hex.publish  │  environment; signs provenance + publishes
+   │ provenance (_release-build.yml)│  isolated VM, NO Hex key:
+   │   build → attest → upload tar │    build + sign provenance (SLSA L3)
+   │ publish (release-please.yml)   │  inline `hex-publish` env (key here only):
+   │   verify → POST exact tar     │    upload the attested bytes; docs separately
    └───────────────────────────────┘
                  │
                  ▼
@@ -155,13 +157,11 @@ roadmap but it is **not generally available as of June 2026**. When it ships:
 
 1. On hex.pm, configure a **trusted publisher** for `elixir_php_email_validator`:
    repository `DanielDent/elixir_php_email_validator`, environment `hex-publish`,
-   and the workflow that runs `mix hex.publish` — now the reusable
-   `_release-build.yml`. (Confirm against Hex's docs when it ships whether it
-   matches the reusable workflow's `job_workflow_ref` or the top-level
-   `release-please.yml`.)
-2. In `.github/workflows/_release-build.yml`, remove the `HEX_API_KEY` env line.
-   `id-token: write` is already in place (on both the `publish` caller job and the
-   reusable workflow), so nothing needs uncommenting.
+   and the workflow that runs `mix hex.publish` — the top-level `release-please.yml`
+   (the inline `publish` job runs the publish, so its `job_workflow_ref` is
+   `release-please.yml`, not the reusable `_release-build.yml`).
+2. In `.github/workflows/release-please.yml`, remove the `HEX_API_KEY` env line from
+   the `publish` step and add `id-token: write` to the `publish` job's `permissions:`.
 3. Delete the `HEX_API_KEY` environment secret and revoke the key
    (`mix hex.user key revoke --key-name elixir_php_email_validator-ci`).
 
@@ -208,13 +208,18 @@ review.
 
 ### Build provenance (attestation)
 
-The release reusable workflow (`_release-build.yml`) builds the tarball with
+The `provenance` reusable workflow (`_release-build.yml`) builds the tarball with
 `mix hex.build`, then `actions/attest-build-provenance` records a **Sigstore-signed
 [SLSA](https://slsa.dev) Build L3 provenance attestation** — keyless, via the
-public-good Fulcio CA and the Rekor transparency log, with no stored signing key.
-It binds the tarball's SHA-256 to this repo, the commit, and the workflow, and runs
-**before** `mix hex.publish`, so a provenance failure blocks the publish
-(fail-closed). Anyone can verify a release (needs the `gh` CLI):
+public-good Fulcio CA and the Rekor transparency log, with no stored signing key —
+and uploads that exact tarball as an artifact. The inline `publish` job `needs:` the
+`provenance` job (a failed attestation blocks the publish, fail-closed), then
+**downloads that tarball, re-verifies it against the attestation, and POSTs those
+exact bytes to Hex's release API**. So the published package *is* the attested
+package by construction — no rebuild, no reproducibility assumption. (`mix hex.publish`
+always rebuilds the tarball in memory, so it is not used for the package; docs are a
+separate, unattested tarball published on their own.) Anyone can verify a release
+(needs the `gh` CLI):
 
 ```bash
 mix hex.package fetch elixir_php_email_validator VERSION --output epev.tar
@@ -226,8 +231,11 @@ gh attestation verify epev.tar \
 The attestation lives in GitHub's attestation store + Rekor, **not** on Hex.pm
 (Hex serves no provenance yet — it's on the
 [EEF roadmap](https://security.erlef.org/aegis/roadmap/hex-build-provenance.html)),
-so verification is out-of-band and `mix deps.get` does not check it. The Hex build
-is deterministic, so the attested bytes equal the bytes Hex serves.
+so verification is out-of-band and `mix deps.get` does not check it. Because the
+publish job uploads the **exact attested tarball**, the bytes Hex serves are the
+attested bytes byte-for-byte, so `gh attestation verify` on a tarball fetched from
+Hex passes. (Hex builds are deterministic too — verified: two `mix hex.build` runs
+give the same sha256 — but we don't rely on that; we ship the attested file.)
 
 ### SLSA Build L3 (how the attestation is isolated)
 
@@ -238,17 +246,28 @@ publish job is only L2, because `mix hex.build`/`mix test` and the attest step
 would share one runner VM and its OIDC signing identity — a compromised build step
 could in principle mint that identity and forge provenance.
 
-So the build + attest + publish live in a **reusable workflow**
-(`.github/workflows/_release-build.yml`), invoked by the `publish` caller job in
+So **build + attest** live in a **reusable workflow**
+(`.github/workflows/_release-build.yml`), invoked by the `provenance` job in
 `release-please.yml` via `jobs.<id>.uses:`. The reusable workflow runs on its own
 isolated, ephemeral VM the caller's steps can't reach, so the signing identity is
 unreachable from the build steps — GitHub's documented path to Build L3. It stays
 compatible with the same-run requirement above (a reusable workflow runs inside the
-same triggering run, not a separately-dispatched one), and the `hex-publish`
-environment + its `HEX_API_KEY` secret + the "restrict to `main`" rule all attach
-inside the reusable workflow's job. Because the signer is now the reusable workflow,
-consumers verify with `--signer-workflow …/_release-build.yml` (see the package
-README's verification section).
+same triggering run, not a separately-dispatched one). Because the signer is the
+reusable workflow, consumers verify with `--signer-workflow …/_release-build.yml`
+(see the package README's verification section).
+
+**Publishing is kept separate, inline**, in the `publish` job — the only job that
+declares the `hex-publish` environment, where its `HEX_API_KEY` secret + the
+"restrict to `main`" rule attach. This is deliberate: an environment secret does
+**not** resolve inside a reusable workflow unless the caller forwards it with
+`secrets: inherit`, which would push the key into the build/attest VM. Keeping
+publish inline keeps the key **out** of that VM entirely (the reusable workflow
+holds no credential) while preserving the L3 attestation. The package itself is
+uploaded by a raw API `POST` of the exact attested bytes, so **no dependency code
+runs beside the key** for the package; the only step that does is the separate,
+unattested **docs** publish (`mix hex.publish docs`, which runs `ex_doc`). That
+residual (a build-time dependency reading the key) is inherent to any stored-key
+publish and disappears when Hex ships OIDC trusted publishing.
 
 **Honest payoff.** For this package the L2→L3 delta is mostly a compliance/label
 gain today: Hex stores no provenance and essentially no one runs
