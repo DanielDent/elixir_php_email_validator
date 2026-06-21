@@ -1,16 +1,18 @@
 name: Release build + attest (reusable)
 
-# Reusable workflow: builds the Hex tarball, records its SLSA Build L3 provenance
-# attestation on its own isolated, ephemeral runner VM (the caller's steps can't
-# reach the Sigstore signing identity), and uploads THAT EXACT tarball as an
-# artifact. It holds NO Hex credential and declares NO environment — the publish key
-# never enters this VM.
+# Reusable workflow (KEYLESS): builds the package tarball AND the docs tarball,
+# attests BOTH with actions/attest-build-provenance (SLSA Build L3, keyless Sigstore),
+# and attaches BOTH to the GitHub Release as durable assets. It holds NO Hex
+# credential and declares NO environment — the publish key never enters this VM.
 #
-# The publish job (release-please.yml) downloads this artifact, re-verifies it
-# against the attestation, and POSTs those exact bytes to Hex — so the published
-# package is, by construction, the attested package (no rebuild, no "should be
-# identical" assumption). `mix hex.publish` is deliberately NOT used for the package:
-# it always rebuilds the tarball in memory and can't upload a prebuilt file.
+# The GitHub Release is the durable artifact store: the inline `publish` job
+# downloads these exact attested assets, re-verifies the COMPLETE set, and POSTs the
+# exact bytes to Hex (no rebuild). `mix hex.publish` is not used — it always rebuilds
+# the tarball in memory and can't ship a prebuilt file.
+#
+# The package tarball is byte-reproducible. The docs tarball is NOT (ex_doc embeds
+# version/build details), but we attest and ship the EXACT bytes, so reproducibility
+# is irrelevant to the guarantee — only the package needs to be reproducible.
 
 on:
   workflow_call:
@@ -19,37 +21,83 @@ permissions: {}
 
 jobs:
   build-attest:
-    name: Build the tarball and attest its provenance (SLSA L3)
+    name: Build + attest package and docs (SLSA L3)
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      id-token: write # keyless Sigstore OIDC for the attestation
-      attestations: write # record the build-provenance attestation
+      contents: write # attach assets to the GitHub Release (NO Hex key in this VM)
+      id-token: write # keyless Sigstore OIDC for the attestations
+      attestations: write # record the build-provenance attestations
     steps:
-      # Actions SHA-pinned (Dependabot keeps these current on a cooldown).
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
         with:
           otp-version: "28"
           elixir-version: "1.19"
       - run: mix deps.get
-      # Gate: the inline `publish` job `needs:` this job, so a failing test here
-      # blocks the publish — never ship a version that fails the golden regression.
+      # Gate: the `publish` job `needs:` this job, so a failing test blocks publish.
       - run: mix test
-      - name: Build the Hex tarball
-        run: mix hex.build
-      # Attest the exact tarball bytes. Signer identity is THIS workflow's path, so
-      # consumers verify with --signer-workflow .../_release-build.yml.
-      - name: Attest build provenance for the tarball
+      - name: Build the package tarball (byte-reproducible) and resolve the tag
+        id: build
+        run: |
+          set -euo pipefail
+          mix hex.build
+          shopt -s nullglob
+          pkgs=(elixir_php_email_validator-*.tar)
+          [ "${#pkgs[@]}" -eq 1 ] || { echo "::error::expected exactly one package tarball, found ${#pkgs[@]}"; exit 1; }
+          pkg="${pkgs[0]}"
+          version="${pkg#elixir_php_email_validator-}"; version="${version%.tar}"
+          echo "pkg=$pkg" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "built $pkg (version $version)"
+      - name: Build the docs tarball
+        id: docs
+        run: |
+          set -euo pipefail
+          mix docs
+          docs="docs-${{ steps.build.outputs.tag }}.tar.gz"
+          # Hex's docs endpoint unpacks the HTML; any gzipped tar of doc/ is accepted.
+          tar -czf "$docs" -C doc .
+          test -s "$docs"
+          echo "docs=$docs" >> "$GITHUB_OUTPUT"
+      - name: Build the source archive (byte-reproducible)
+        id: source
+        run: |
+          set -euo pipefail
+          src="source-${{ steps.build.outputs.tag }}.tar.gz"
+          # Archive the exact build commit's tree (the commit the provenance binds).
+          # --format=tar | gzip -n keeps it byte-reproducible (no embedded gzip mtime),
+          # so anyone can re-derive it from the tag/commit and check the attested digest.
+          git archive --format=tar --prefix="elixir_php_email_validator-${{ steps.build.outputs.version }}/" HEAD \
+            | gzip -n -9 > "$src"
+          test -s "$src"
+          echo "src=$src" >> "$GITHUB_OUTPUT"
+      # Attest all THREE tarballs — each binds its SHA-256 to repo/commit/this workflow,
+      # tying package + docs + source to one build. Signer identity is THIS workflow's
+      # path, so consumers verify with --signer-workflow .../_release-build.yml.
+      - name: Attest build provenance (package + docs + source)
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
-          subject-path: "elixir_php_email_validator-*.tar"
-      # Hand the EXACT attested tarball to the publish job (which re-verifies it
-      # against the attestation before uploading those bytes to Hex).
-      - name: Upload the attested tarball
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: hex-tarball
-          path: elixir_php_email_validator-*.tar
-          if-no-files-found: error
-          retention-days: 1
+          subject-path: |
+            ${{ steps.build.outputs.pkg }}
+            ${{ steps.docs.outputs.docs }}
+            ${{ steps.source.outputs.src }}
+      # Attach BOTH attested tarballs to the GitHub Release (the durable store the
+      # publish job pulls from). --clobber makes a re-run / dispatch idempotent.
+      - name: Attach the attested tarballs to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.build.outputs.tag }}"
+          # The Release normally already exists (release-please created it in this run).
+          # On a workflow_dispatch retry, create it from the (required) tag if absent so
+          # the store is always populated and dispatch retries converge. --verify-tag
+          # fails loudly + actionably if the underlying git tag is missing.
+          gh release view "$tag" >/dev/null 2>&1 \
+            || gh release create "$tag" --verify-tag --title "$tag" --notes "Release ${tag}"
+          gh release upload "$tag" \
+            "${{ steps.build.outputs.pkg }}" \
+            "${{ steps.docs.outputs.docs }}" \
+            "${{ steps.source.outputs.src }}" \
+            --clobber

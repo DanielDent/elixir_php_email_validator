@@ -205,8 +205,14 @@ gh attestation verify epev.tar \
 ```
 
 A passing check proves the tarball Hex served you was produced by this repo's
-release workflow at a specific commit — not substituted or tampered with. The
-Hex build is deterministic, so the attested bytes and the bytes Hex serves match.
+release workflow at the exact commit recorded in the attestation — not substituted
+or tampered with. The publish step uploads the *exact* attested bytes (no rebuild),
+so the bytes Hex serves match byte-for-byte. The same release's **docs** and a
+byte-reproducible **source** archive are attested too and attached to the
+[GitHub Release](https://github.com/DanielDent/elixir_php_email_validator/releases) —
+verify them the same way after `gh release download vVERSION`. (GitHub's auto
+"Source code" Release assets are a *separate, unattested* thing — use
+`source-vVERSION.tar.gz`.)
 
 **Scope (the honest version).** The attestation covers the artifact this repo
 built; **Hex.pm does not yet store or surface provenance itself** (it's on the
