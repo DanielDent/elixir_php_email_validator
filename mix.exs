@@ -4,7 +4,7 @@ defmodule ElixirPhpEmailValidator.MixProject do
   # Managed automatically by release-please (see release-please-config.json).
   # Starts at 0.0.0; the first release PR cuts 0.1.0 from the commit history.
   # x-release-please-start-version
-  @version "1.0.6"
+  @version "1.0.7"
   # x-release-please-end
   @source_url "https://github.com/DanielDent/elixir_php_email_validator"
   @author_url "https://danieldent.com"
