@@ -189,6 +189,34 @@ simultaneously. The provenance and per-version checksum evidence are in
   analysis, cross-version proof, the Elixir-ecosystem survey (why nothing else is
   equivalent), the 136-case quirks catalog, and the PCRE/packaging notes.
 
+## Verifying the published package (build provenance)
+
+Each release is published by the automated pipeline with a **Sigstore-signed
+[build-provenance attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds)**
+binding the tarball to the exact repository, commit, and workflow run that built
+it. To check a release yourself (needs the [`gh` CLI](https://cli.github.com/)):
+
+```bash
+# fetch the exact published tarball from Hex, then verify GitHub's attestation for those bytes
+mix hex.package fetch elixir_php_email_validator VERSION --output epev.tar
+gh attestation verify epev.tar \
+  --repo DanielDent/elixir_php_email_validator \
+  --signer-workflow DanielDent/elixir_php_email_validator/.github/workflows/_release-build.yml
+```
+
+A passing check proves the tarball Hex served you was produced by this repo's
+release workflow at a specific commit — not substituted or tampered with. The
+Hex build is deterministic, so the attested bytes and the bytes Hex serves match.
+
+**Scope (the honest version).** The attestation covers the artifact this repo
+built; **Hex.pm does not yet store or surface provenance itself** (it's on the
+[EEF "Hex Build Provenance" roadmap](https://security.erlef.org/aegis/roadmap/hex-build-provenance.html)),
+so `mix deps.get` does **not** check it automatically — verification is a
+deliberate, out-of-band step. It is [SLSA](https://slsa.dev) Build **L3** — the
+build and the signing run in an isolated reusable workflow, so the build steps
+can't reach the signing identity. Attestations exist only for releases published
+after this step was added to the pipeline.
+
 ## Contributing & releases
 
 This project releases itself: commits to `main` using

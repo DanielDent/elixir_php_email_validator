@@ -22,7 +22,7 @@ need to do.
                  ▼
    ┌───────────────────────────────┐
    │ publish job (release-please.yml)     │  runs in the protected `hex-publish`
-   │  mix test  →  mix hex.publish  │  environment; publishes package + docs
+   │  test → attest → hex.publish  │  environment; signs provenance + publishes
    └───────────────────────────────┘
                  │
                  ▼
@@ -154,24 +154,46 @@ Hex.pm has trusted publishing (keyless OIDC, no stored credential) on its
 roadmap but it is **not generally available as of June 2026**. When it ships:
 
 1. On hex.pm, configure a **trusted publisher** for `elixir_php_email_validator`:
-   repository `DanielDent/elixir_php_email_validator`, workflow `release-please.yml`,
-   environment `hex-publish`.
-2. In `.github/workflows/release-please.yml`, uncomment `id-token: write` in the
-   `publish` job and remove the `HEX_API_KEY` env line.
+   repository `DanielDent/elixir_php_email_validator`, environment `hex-publish`,
+   and the workflow that runs `mix hex.publish` — now the reusable
+   `_release-build.yml`. (Confirm against Hex's docs when it ships whether it
+   matches the reusable workflow's `job_workflow_ref` or the top-level
+   `release-please.yml`.)
+2. In `.github/workflows/_release-build.yml`, remove the `HEX_API_KEY` env line.
+   `id-token: write` is already in place (on both the `publish` caller job and the
+   reusable workflow), so nothing needs uncommenting.
 3. Delete the `HEX_API_KEY` environment secret and revoke the key
    (`mix hex.user key revoke --key-name elixir_php_email_validator-ci`).
 
-No other restructuring is needed — the publish job is already isolated for this.
+No other restructuring is needed — the publish path is already isolated for this.
 
 ---
 
 ## Supply-chain notes
 
-The `publish` job is the only job that can see the Hex credential, so the actions
-that run in it (`actions/checkout`, `erlef/setup-beam`) are pinned to immutable
-**commit SHAs** with a `# vX.Y.Z` comment — a moved tag can't swap in malicious
-code on the one job that could exfiltrate the key. (CI/drift jobs, which have no
-secret, stay on tags for simplicity.)
+**Every** third-party action across the pipeline (CI, drift, release) is pinned
+to an immutable **commit SHA** with a `# vX.Y.Z` comment, so a moved tag can never
+swap in malicious code — most critically on the `publish` job, the only one that
+can see the Hex credential. Dependabot reads the version from the comment and
+bumps the SHA and the comment together, so pinning adds no manual upkeep.
+
+The GitHub-hosted **runner image** is intentionally left as `ubuntu-latest`. The
+pinning policy here is "pin only what Dependabot keeps current on a cooldown," and
+**Dependabot does not manage `runs-on` labels** — so pinning to a specific LTS
+(`ubuntu-24.04`) would just create a manual, un-cooled pin that goes stale, the
+opposite of the goal. `ubuntu-latest` stays auto-current via GitHub's gradual
+`-latest` migration; the runner is GitHub-built and already inside the trust
+boundary you accept by using GitHub Actions, so it is not a third-party
+supply-chain surface (unlike actions, where SHA-pinning guards a *different*
+boundary). If you ever want the build environment itself **pinned _and_
+auto-updated on a cooldown**, note that a `container:` digest placed directly in a
+workflow is **not** Dependabot-managed (Dependabot tracks `uses:` actions and
+Dockerfiles / k8s manifests — not workflow `container:`/`services:` keys; see
+dependabot-core #5819). The only Dependabot-cooled path is a **builder Dockerfile**
+(`FROM image:tag@sha256:…`, tracked by `package-ecosystem: docker`) whose image the
+release job runs in — ideally mirrored to a registry you control. That's the right
+tool for an infra/release repo with audit requirements; for this
+zero-runtime-dependency library it is overkill.
 
 Dependabot keeps those pins (and the dev-only `mix` deps) current, but on a
 **cooldown** (`.github/dependabot.yml`): it waits 7 days (30 for majors) after a
@@ -183,6 +205,60 @@ workflow (`.github/workflows/dependabot-automerge.yml`) merges the safe ones
 once CI passes — any dev/test dependency, and any non-major GitHub Actions bump.
 Only a **major** GitHub Actions bump (a release-infra change) waits for your
 review.
+
+### Build provenance (attestation)
+
+The release reusable workflow (`_release-build.yml`) builds the tarball with
+`mix hex.build`, then `actions/attest-build-provenance` records a **Sigstore-signed
+[SLSA](https://slsa.dev) Build L3 provenance attestation** — keyless, via the
+public-good Fulcio CA and the Rekor transparency log, with no stored signing key.
+It binds the tarball's SHA-256 to this repo, the commit, and the workflow, and runs
+**before** `mix hex.publish`, so a provenance failure blocks the publish
+(fail-closed). Anyone can verify a release (needs the `gh` CLI):
+
+```bash
+mix hex.package fetch elixir_php_email_validator VERSION --output epev.tar
+gh attestation verify epev.tar \
+  --repo DanielDent/elixir_php_email_validator \
+  --signer-workflow DanielDent/elixir_php_email_validator/.github/workflows/_release-build.yml
+```
+
+The attestation lives in GitHub's attestation store + Rekor, **not** on Hex.pm
+(Hex serves no provenance yet — it's on the
+[EEF roadmap](https://security.erlef.org/aegis/roadmap/hex-build-provenance.html)),
+so verification is out-of-band and `mix deps.get` does not check it. The Hex build
+is deterministic, so the attested bytes equal the bytes Hex serves.
+
+### SLSA Build L3 (how the attestation is isolated)
+
+L3 adds two requirements over L2: builds are **isolated** (each GitHub-hosted job
+is a fresh ephemeral VM — always true here) and the provenance signing material is
+**unforgeable**, i.e. inaccessible to the user-defined build steps. An *inline*
+publish job is only L2, because `mix hex.build`/`mix test` and the attest step
+would share one runner VM and its OIDC signing identity — a compromised build step
+could in principle mint that identity and forge provenance.
+
+So the build + attest + publish live in a **reusable workflow**
+(`.github/workflows/_release-build.yml`), invoked by the `publish` caller job in
+`release-please.yml` via `jobs.<id>.uses:`. The reusable workflow runs on its own
+isolated, ephemeral VM the caller's steps can't reach, so the signing identity is
+unreachable from the build steps — GitHub's documented path to Build L3. It stays
+compatible with the same-run requirement above (a reusable workflow runs inside the
+same triggering run, not a separately-dispatched one), and the `hex-publish`
+environment + its `HEX_API_KEY` secret + the "restrict to `main`" rule all attach
+inside the reusable workflow's job. Because the signer is now the reusable workflow,
+consumers verify with `--signer-workflow …/_release-build.yml` (see the package
+README's verification section).
+
+**Honest payoff.** For this package the L2→L3 delta is mostly a compliance/label
+gain today: Hex stores no provenance and essentially no one runs
+`gh attestation verify` on Hex tarballs, so the extra "can't forge provenance
+mid-build" guarantee protects a threat almost no consumer is positioned to check
+yet. It costs little to keep and it future-proofs for if/when Hex ships native
+provenance verification. (We use a GitHub-native reusable workflow rather than
+`slsa-framework/slsa-github-generator`: same `gh attestation verify` UX, and the
+generic generator wouldn't isolate the *build* for a mix package anyway — there is
+no Elixir-specific SLSA builder.)
 
 ---
 
