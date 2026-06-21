@@ -106,7 +106,7 @@ jobs:
         run: |
           title="PHP version discovery fell back to a pinned list"
           body="endoflife.date discovery returned nothing usable, so CI is using the hardcoded fallback PHP list and the matrix is frozen. If this persists, /api/php.json may be down or reshaped — migrate to /api/v1/products/php. Run: $RUN_URL"
-          num=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')
+          num=$(gh issue list --state open --search "$title in:title" --json number,title --jq "map(select(.title==\"$title\")) | .[0].number // empty")
           if [ -n "$num" ]; then
             gh issue comment "$num" --body "Still falling back (re-checked). $body"
           else
@@ -155,26 +155,58 @@ jobs:
     name: Latest Elixir canary (OTP 28)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write # escalate a sustained version-discovery fallback
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       # Resolve the latest *stable* Elixir (exclude -rc/pre-releases to avoid
       # noise), on current-stable OTP. A new OTP major is the one rare manual
-      # bump; new Elixir minors are picked up here automatically.
+      # bump; new Elixir minors are picked up here automatically. A discovery
+      # failure is made LOUD (warning + scheduled tracking issue) — never silently
+      # pinned, so the canary can't stop tracking newest unnoticed.
       - id: latest
         run: |
           set -uo pipefail
-          v=$(git ls-remote --tags --refs https://github.com/elixir-lang/elixir.git 'v1.*' 2>/dev/null \
-              | awk -F/ '{print $NF}' | grep -E '^v1\.[0-9]+\.[0-9]+$' | sort -V | tail -1 | tr -d v)
-          [ -z "$v" ] && v="1.19.5"
+          fallback=false
+          if ! raw=$(git ls-remote --tags --refs https://github.com/elixir-lang/elixir.git 'v1.*'); then
+            echo "::warning::git ls-remote for Elixir tags failed"; raw=""
+          fi
+          v=$(printf '%s\n' "$raw" | awk -F/ '{print $NF}' | grep -E '^v1\.[0-9]+\.[0-9]+$' | sort -V | tail -1 | tr -d v)
+          if [ -z "$v" ]; then
+            v="1.19.5"; fallback=true
+            echo "::warning::Could not resolve latest stable Elixir; falling back to pinned $v — the canary is NOT tracking newest"
+          fi
           echo "elixir=$v" >> "$GITHUB_OUTPUT"
-          echo "Latest stable Elixir: $v"
+          echo "fallback=$fallback" >> "$GITHUB_OUTPUT"
+          echo "Latest stable Elixir: $v (fallback=$fallback)"
+      - name: Escalate a sustained discovery fallback
+        if: ${{ steps.latest.outputs.fallback == 'true' && github.event_name == 'schedule' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Elixir/OTP version discovery fell back to a pinned version"
+          body="The canary / newest-OTP watch could not resolve the newest stable Elixir/OTP (git ls-remote failed or returned nothing) and fell back to a pinned version, so it is no longer tracking newest — a new release that breaks parity could pass unnoticed. Investigate (GitHub/network/tag format). Run: $RUN_URL"
+          num=$(gh issue list --state open --search "$title in:title" --json number,title --jq "map(select(.title==\"$title\")) | .[0].number // empty")
+          if [ -n "$num" ]; then
+            gh issue comment "$num" --body "Still falling back (re-checked). $body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
       - uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
+        if: ${{ steps.latest.outputs.fallback != 'true' }}
         with:
           otp-version: "28"
           elixir-version: ${{ steps.latest.outputs.elixir }}
       # The test env has no dependencies, so this exercises only the library on
-      # the newest Elixir (and OTP 28's PCRE) — not the dev tooling.
-      - run: mix test
+      # the newest Elixir (and OTP 28's PCRE) — not the dev tooling. Skipped on a
+      # discovery fallback (don't test the stale pinned version as if it were newest).
+      - name: Canary — newest stable Elixir
+        if: ${{ steps.latest.outputs.fallback != 'true' }}
+        run: mix test
 
   # ── Newest-OTP watch: the project's #1 long-term divergence vector is a new
   # OTP's PCRE2 shipping newer Unicode tables (\pL\pN classification on the
@@ -194,35 +226,65 @@ jobs:
       - id: resolve
         run: |
           set -uo pipefail
+          fallback=false
           # Newest stable OTP major (final releases only; drop -rc/pre).
-          otp=$(git ls-remote --tags --refs https://github.com/erlang/otp.git 'OTP-*' 2>/dev/null \
-              | awk -F/ '{print $NF}' | sed 's/^OTP-//' | grep -E '^[0-9]+(\.[0-9]+)*$' \
-              | sort -V | tail -1)
-          [ -z "$otp" ] && otp="28"
+          if ! otp_raw=$(git ls-remote --tags --refs https://github.com/erlang/otp.git 'OTP-*'); then
+            echo "::warning::git ls-remote for OTP tags failed"; otp_raw=""
+          fi
+          otp=$(printf '%s\n' "$otp_raw" | awk -F/ '{print $NF}' | sed 's/^OTP-//' \
+              | grep -E '^[0-9]+(\.[0-9]+)*$' | sort -V | tail -1)
+          if [ -z "$otp" ]; then otp="28"; fallback=true; fi
           otp_major="${otp%%.*}"
           # Newest stable Elixir (exclude -rc/pre, as the canary does).
-          elixir=$(git ls-remote --tags --refs https://github.com/elixir-lang/elixir.git 'v1.*' 2>/dev/null \
-              | awk -F/ '{print $NF}' | grep -E '^v1\.[0-9]+\.[0-9]+$' | sort -V | tail -1 | tr -d v)
-          [ -z "$elixir" ] && elixir="1.19.5"
+          if ! el_raw=$(git ls-remote --tags --refs https://github.com/elixir-lang/elixir.git 'v1.*'); then
+            echo "::warning::git ls-remote for Elixir tags failed"; el_raw=""
+          fi
+          elixir=$(printf '%s\n' "$el_raw" | awk -F/ '{print $NF}' | grep -E '^v1\.[0-9]+\.[0-9]+$' | sort -V | tail -1 | tr -d v)
+          if [ -z "$elixir" ]; then elixir="1.19.5"; fallback=true; fi
+          if [ "$fallback" = "true" ]; then
+            echo "::warning::Could not resolve newest OTP/Elixir; falling back to pinned OTP $otp_major / Elixir $elixir — this watch is NOT tracking newest"
+          fi
           echo "otp=$otp_major" >> "$GITHUB_OUTPUT"
           echo "elixir=$elixir" >> "$GITHUB_OUTPUT"
-          echo "Newest stable OTP major: $otp_major ; newest stable Elixir: $elixir"
+          echo "fallback=$fallback" >> "$GITHUB_OUTPUT"
+          echo "Newest stable OTP major: $otp_major ; newest stable Elixir: $elixir (fallback=$fallback)"
+      - name: Escalate a sustained discovery fallback
+        if: ${{ steps.resolve.outputs.fallback == 'true' && github.event_name == 'schedule' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Elixir/OTP version discovery fell back to a pinned version"
+          body="The canary / newest-OTP watch could not resolve the newest stable Elixir/OTP (git ls-remote failed or returned nothing) and fell back to a pinned version, so it is no longer tracking newest — a new release that breaks parity could pass unnoticed. Investigate (GitHub/network/tag format). Run: $RUN_URL"
+          num=$(gh issue list --state open --search "$title in:title" --json number,title --jq "map(select(.title==\"$title\")) | .[0].number // empty")
+          if [ -n "$num" ]; then
+            gh issue comment "$num" --body "Still falling back (re-checked). $body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
       # continue-on-error makes a missing Elixir-for-new-OTP build a soft-skip,
       # not a red run (so it doesn't open a spurious issue before Elixir catches up).
+      # Skipped on a discovery fallback (don't soft-skip-mask a broken resolver).
       - id: beam
+        if: ${{ steps.resolve.outputs.fallback != 'true' }}
         continue-on-error: true
         uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
         with:
           otp-version: ${{ steps.resolve.outputs.otp }}
           elixir-version: ${{ steps.resolve.outputs.elixir }}
       - name: Golden regression on the newest OTP
-        if: steps.beam.outcome == 'success'
+        id: golden
+        if: ${{ steps.resolve.outputs.fallback != 'true' && steps.beam.outcome == 'success' }}
         run: mix test
       - name: Soft-skip note when no Elixir build exists for the newest OTP yet
-        if: steps.beam.outcome != 'success'
+        if: ${{ steps.resolve.outputs.fallback != 'true' && steps.beam.outcome != 'success' }}
         run: echo "::notice::Skipped — no precompiled Elixir ${{ steps.resolve.outputs.elixir }} for OTP ${{ steps.resolve.outputs.otp }} yet; will retry next week."
       - name: Open or update a tracking issue on divergence
-        if: failure()
+        # Only a genuine golden-test failure is a parity divergence — checkout/resolve/
+        # escalate failures must not masquerade as a PCRE2/Unicode divergence.
+        if: ${{ steps.golden.outcome == 'failure' }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -230,12 +292,35 @@ jobs:
         run: |
           title="Golden parity failed on the newest stable OTP"
           body="\`mix test\` failed on the newest stable OTP (${{ steps.resolve.outputs.otp }}). A new OTP's PCRE2/Unicode tables may have diverged from the committed PHP golden — the project's #1 long-term divergence vector. Re-vet the unicode path and the OTP matrix. Run: $RUN_URL"
-          num=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')
+          num=$(gh issue list --state open --search "$title in:title" --json number,title --jq "map(select(.title==\"$title\")) | .[0].number // empty")
           if [ -n "$num" ]; then
             gh issue comment "$num" --body "Still failing (re-checked). $body"
           else
             gh issue create --title "$title" --body "$body"
           fi
+
+  # ── Single required status check for branch protection ────────────────────
+  # The differential matrix is dynamic (PHP versions discovered at runtime), so we
+  # can't enumerate every leg as a required context. This job aggregates the gating
+  # jobs into ONE context to require: it fails if any of them failed, was cancelled,
+  # or was skipped. (canary / newest-otp-watch are schedule/dispatch-only watches and
+  # are intentionally NOT gating.)
+  ci-passed:
+    name: CI passed
+    if: always()
+    needs: [quality, test, php-versions, differential]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert all required CI jobs succeeded
+        run: |
+          set -euo pipefail
+          results="${{ join(needs.*.result, ',') }}"
+          echo "required job results: ${results}"
+          case ",${results}," in
+            *,failure,*|*,cancelled,*|*,skipped,*)
+              echo "::error::a required CI job did not succeed (${results})"; exit 1 ;;
+          esac
+          echo "all required CI jobs succeeded"
 
   # ── Make scheduled failures visible: open/refresh a tracking issue ─────────
   notify:
@@ -254,7 +339,7 @@ jobs:
         run: |
           title="Scheduled self-test failed"
           body="The weekly self-test failed — likely a new PHP patch changed behaviour, or a new Elixir/OTP release broke the build (canary). Investigate: $RUN_URL"
-          num=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')
+          num=$(gh issue list --state open --search "$title in:title" --json number,title --jq "map(select(.title==\"$title\")) | .[0].number // empty")
           if [ -n "$num" ]; then
             gh issue comment "$num" --body "Still failing (re-checked). $body"
           else

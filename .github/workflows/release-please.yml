@@ -1,29 +1,39 @@
 name: Release
 
-# Fully automated release pipeline:
-#   1. release-please watches `main` for Conventional Commits and maintains an
-#      open "release PR" that bumps the version (mix.exs) and updates CHANGELOG.
-#   2. When you merge that PR, release-please tags + creates a GitHub Release.
-#   3. The `provenance` job (the `_release-build.yml` reusable workflow) builds the
-#      tarball and attests it (SLSA Build L3); the `publish` job then pushes it to Hex.
+# Fully automated, atomic-as-possible, idempotent release pipeline:
+#   1. release-please watches `main` for Conventional Commits and maintains a
+#      "release PR" that bumps the version (mix.exs) and updates CHANGELOG.
+#   2. Merging it tags vX.Y.Z and creates the GitHub Release (the durable store).
+#   3. `provenance` (the keyless `_release-build.yml` reusable workflow) builds +
+#      attests the package AND docs tarballs (SLSA Build L3) and ATTACHES both to the
+#      Release.
+#   4. `publish` (the only job with the Hex key, in the protected `hex-publish`
+#      environment) downloads those exact attested assets from the Release, VERIFIES
+#      THE COMPLETE SET against its attestation (fully-attested-set-or-nothing — if
+#      either is missing/unverified it publishes NOTHING), then POSTs the exact bytes
+#      to Hex: the package idempotently (skip if already published with matching
+#      checksum; hard-fail on divergent bytes) and the docs (Hex overwrites freely).
+#      Both are REQUIRED — a partial write fails the job loudly; the publish pulls
+#      from the durable Release, so a retry (Re-run failed jobs, or workflow_dispatch)
+#      converges without rebuilding.
 #
-# Credential isolation: `mix hex.publish` runs in the inline `publish` job, the ONLY
-# job that declares the protected `hex-publish` GitHub Environment, so HEX_API_KEY is
-# never exposed to pull requests, forks, or logs, never enters the build/attest VM,
-# and the key is scoped to just the publish step. Build + attest run in the reusable
-# workflow on a separate isolated VM, which keeps the Sigstore signing identity off
-# the build steps — that is what makes the provenance SLSA Build L3. The key is NOT
-# passed to the reusable workflow (no `secrets: inherit`), so it stays out of that
-# VM. See RELEASING.md and _release-build.yml.
+# Credential isolation: HEX_API_KEY lives ONLY in the inline `publish` job (the
+# `hex-publish` environment, gated to `main`), never enters the build/attest VM, and
+# the publish job runs NO dependency code (no mix/ex_doc) beside the key — just
+# gh + curl. Build + attest run in a separate isolated VM, which is what makes the
+# provenance SLSA Build L3.
 #
-# NOTE: the provenance + publish jobs and release-please MUST live in the same run.
-# release-please creates the tag/release with GITHUB_TOKEN, and events raised by
-# GITHUB_TOKEN do not trigger separate `on: release`/`on: push: tags` workflows.
+# Honest boundary: Hex's package POST and docs POST are two non-transactional calls,
+# so this is "as atomic as possible" (gate before any write + idempotent convergence
+# on retry), NOT a two-phase commit.
+#
+# NOTE: provenance + publish MUST share the run with release-please — a tag created
+# by GITHUB_TOKEN does not trigger a separate `on: release`/`push: tags` workflow.
 
 on:
   push:
     branches: [main]
-  workflow_dispatch: # manual escape hatch: publish whatever version is on main
+  workflow_dispatch: # manual escape hatch / idempotent retry: (re)publish main's version
 
 # Default-deny; each job declares exactly what it needs.
 permissions: {}
@@ -36,7 +46,6 @@ jobs:
   release-please:
     name: Maintain release PR / cut release
     runs-on: ubuntu-latest
-    # The action's documented permission set.
     permissions:
       contents: write
       pull-requests: write
@@ -50,34 +59,22 @@ jobs:
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         id: rp
         with:
-          # Uses release-please-config.json + .release-please-manifest.json.
-          # GITHUB_TOKEN is sufficient — no personal token required.
           token: ${{ secrets.GITHUB_TOKEN }}
 
-  # Build + attest run in the `_release-build.yml` REUSABLE workflow, on its own
-  # isolated, ephemeral runner VM the caller's steps can't reach — that isolation of
-  # the Sigstore signing identity from the build steps is what makes the attestation
-  # SLSA Build L3. It holds NO Hex credential. A reusable workflow invoked here runs
-  # inside this same release run, preserving the "shares the run with release-please"
-  # requirement above. No `secrets:` are passed, so the key stays out of this VM.
+  # Build + attest the package AND docs tarballs and attach both to the Release, on
+  # an isolated, keyless VM (SLSA Build L3). No Hex credential here.
   provenance:
     name: Build + attest (SLSA L3)
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch' }}
     uses: ./.github/workflows/_release-build.yml
     permissions:
-      contents: read
+      contents: write
       id-token: write
       attestations: write
 
-  # Publishing runs in a normal INLINE job that declares the `hex-publish`
-  # environment, so the HEX_API_KEY environment secret resolves here (it does NOT
-  # resolve inside a reusable workflow unless the caller forwards it — which we avoid
-  # to keep the key out of the build/attest VM). `needs: provenance` makes a failed
-  # attestation block the publish (fail-closed). The package published is the EXACT
-  # attested tarball: we download the artifact, re-verify it against its attestation,
-  # then POST those bytes straight to Hex's API — NOT `mix hex.publish`, which always
-  # rebuilds the tarball in memory. Docs are separate and unattested.
+  # Publish the EXACT attested bytes to Hex. The only job with the Hex key; runs no
+  # dependency code beside it (gh + curl only). Idempotent + fail-closed.
   publish:
     name: Publish to Hex.pm
     needs: [release-please, provenance]
@@ -87,63 +84,146 @@ jobs:
       name: hex-publish
       url: https://hex.pm/packages/elixir_php_email_validator
     permissions:
-      contents: read
-      attestations: read # for `gh attestation verify` below
+      contents: read # gh release download
+      attestations: read # gh attestation verify
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
-        with:
-          otp-version: "28"
-          elixir-version: "1.19"
-      - name: Download the attested tarball
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
-        with:
-          name: hex-tarball
-      # Re-verify the downloaded bytes ARE the attested bytes — GitHub artifacts are
-      # not content-addressed, so this closes the swap gap and makes "published ==
-      # attested" end-to-end. Retry for the brief propagation of an attestation just
-      # created in this same run.
-      - name: Verify the tarball against its provenance attestation
+      - name: Resolve version + download the attested assets from the Release
+        id: assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tar=$(ls elixir_php_email_validator-*.tar)
-          for i in 1 2 3 4 5 6; do
-            if gh attestation verify "$tar" \
-                 --repo DanielDent/elixir_php_email_validator \
-                 --signer-workflow DanielDent/elixir_php_email_validator/.github/workflows/_release-build.yml; then
-              echo "provenance verified for $tar"; exit 0
-            fi
-            echo "attestation not available yet (attempt $i); waiting…"; sleep 10
+          version=$(grep -E '^[[:space:]]*@version[[:space:]]+"' mix.exs | head -1 | sed -E 's/.*"([^"]+)".*/\1/' || true)
+          [ -n "$version" ] || { echo "::error::could not read @version from mix.exs"; exit 1; }
+          tag="v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          mkdir -p assets
+          gh release download "$tag" --dir assets \
+            --pattern 'elixir_php_email_validator-*.tar' \
+            --pattern 'docs-*.tar.gz' \
+            --pattern 'source-*.tar.gz'
+          shopt -s nullglob
+          pkgs=(assets/elixir_php_email_validator-*.tar); docs=(assets/docs-*.tar.gz); srcs=(assets/source-*.tar.gz)
+          [ "${#pkgs[@]}" -eq 1 ] || { echo "::error::expected exactly one package asset on $tag, found ${#pkgs[@]}"; exit 1; }
+          [ "${#docs[@]}" -eq 1 ] || { echo "::error::expected exactly one docs asset on $tag, found ${#docs[@]}"; exit 1; }
+          [ "${#srcs[@]}" -eq 1 ] || { echo "::error::expected exactly one source asset on $tag, found ${#srcs[@]}"; exit 1; }
+          echo "pkg=${pkgs[0]}" >> "$GITHUB_OUTPUT"
+          echo "docs=${docs[0]}" >> "$GITHUB_OUTPUT"
+          echo "src=${srcs[0]}" >> "$GITHUB_OUTPUT"
+          echo "resolved $tag: ${pkgs[0]} + ${docs[0]} + ${srcs[0]}"
+      # GATE (fully-attested-set-or-nothing): the COMPLETE set must verify against its
+      # attestation before ANY Hex write. Any missing/unverified asset => publish nothing.
+      - name: Gate — verify the complete attested set
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for f in "${{ steps.assets.outputs.pkg }}" "${{ steps.assets.outputs.docs }}" "${{ steps.assets.outputs.src }}"; do
+            ok=false
+            for i in 1 2 3 4 5 6; do
+              if gh attestation verify "$f" \
+                   --repo DanielDent/elixir_php_email_validator \
+                   --signer-workflow DanielDent/elixir_php_email_validator/.github/workflows/_release-build.yml; then
+                ok=true; break
+              fi
+              echo "attestation for $f not available yet (attempt $i); waiting…"; [ "$i" = 6 ] || sleep 10
+            done
+            [ "$ok" = "true" ] || { echo "::error::attestation verification FAILED for $f — aborting, publishing NOTHING"; exit 1; }
           done
-          echo "::error::could not verify $tar against its attestation"; exit 1
-      # Publish the EXACT attested bytes — no rebuild. `authorization` is the raw key
-      # (no Bearer prefix); Hex derives the registry checksum from these bytes, so the
-      # published package == the attested package by construction.
-      - name: Publish the exact tarball to Hex
+          echo "complete attested set verified — proceeding to publish"
+      # Probe Hex for this version with an UNAUTHENTICATED GET (NO key in this step).
+      # The package tarball is byte-reproducible, so its sha256 == Hex's stored
+      # checksum (outer_checksum) — that equality is the load-bearing idempotency
+      # invariant. Transient 5xx/000 are retried; a real 200/404 is terminal.
+      - name: Check whether the version is already on Hex
+        id: hexcheck
+        run: |
+          set -euo pipefail
+          version="${{ steps.assets.outputs.version }}"
+          pkg="${{ steps.assets.outputs.pkg }}"
+          sha=$(shasum -a 256 "$pkg" | cut -d' ' -f1)
+          code="000"
+          for i in 1 2 3; do
+            code=$(curl -sS -o rel.json -w '%{http_code}' \
+              "https://hex.pm/api/packages/elixir_php_email_validator/releases/${version}" || echo "000")
+            case "${code}" in 200|404) break ;; esac
+            echo "transient Hex GET response (${code}); retry ${i}…"; sleep 5
+          done
+          echo "GET release ${version} -> HTTP ${code}"
+          case "${code}" in
+            404)
+              echo "state=absent" >> "$GITHUB_OUTPUT"
+              echo "not on Hex yet — will POST the exact attested tarball"
+              ;;
+            200)
+              published=$(jq -r '.checksum // ""' rel.json)
+              if [ "${published}" = "${sha}" ]; then
+                echo "state=present" >> "$GITHUB_OUTPUT"
+                echo "package ${version} already on Hex with matching checksum — POST will be skipped (idempotent)"
+              else
+                echo "::error::version ${version} already published with DIFFERENT bytes (published=${published}, attested=${sha}) — refusing to overwrite"; exit 1
+              fi
+              ;;
+            *)
+              echo "::error::Hex GET for ${version} failed (HTTP ${code})"; cat rel.json; echo; exit 1
+              ;;
+          esac
+      # POST the EXACT attested package bytes — ONLY if absent. The key touches only
+      # this step (and the docs step). We never use Hex's ?replace (no 1h edit window).
+      - name: Publish package (idempotent)
+        if: ${{ steps.hexcheck.outputs.state == 'absent' }}
         env:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
         run: |
           set -euo pipefail
-          tar=$(ls elixir_php_email_validator-*.tar)
-          code=$(curl -sS -o resp.txt -w '%{http_code}' \
-            -X POST "https://hex.pm/api/packages/elixir_php_email_validator/releases" \
+          pkg="${{ steps.assets.outputs.pkg }}"
+          version="${{ steps.assets.outputs.version }}"
+          pcode=$(curl -sS -o presp.txt -w '%{http_code}' -X POST \
+            "https://hex.pm/api/packages/elixir_php_email_validator/releases" \
             -H "authorization: ${HEX_API_KEY}" \
             -H "content-type: application/octet-stream" \
-            --data-binary "@${tar}")
-          echo "HTTP ${code}"; cat resp.txt; echo
-          case "${code}" in 200|201) echo "published ${tar}";; *) echo "::error::Hex publish failed (HTTP ${code})"; exit 1;; esac
-      # Docs are a separate, unattested tarball (a different Hex endpoint) — build and
-      # publish them on their own. This is the only step that runs dependency code
-      # (ex_doc) beside the key; the package upload above runs none.
-      - run: mix deps.get
-      - name: Publish docs to HexDocs
-        # Best-effort: the attested package is already published above, so a docs
-        # hiccup must not fail the release (re-run `mix hex.publish docs` by hand).
-        continue-on-error: true
+            --data-binary "@${pkg}")
+          echo "package POST -> HTTP ${pcode}"
+          case "${pcode}" in 200|201) echo "package ${version} published";; *) echo "::error::package publish failed (HTTP ${pcode})"; cat presp.txt; echo; exit 1;; esac
+      # Docs are freely overwritable on Hex (inherently idempotent). REQUIRED — a docs
+      # failure fails the job (no continue-on-error); a retry converges.
+      - name: Publish docs (idempotent)
         env:
-          # When Hex.pm OIDC trusted publishing ships, delete this secret + the env
-          # lines and add `id-token: write` to this job's permissions — see RELEASING.md.
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
-        run: mix hex.publish docs --yes
+        run: |
+          set -euo pipefail
+          docs="${{ steps.assets.outputs.docs }}"
+          version="${{ steps.assets.outputs.version }}"
+          dcode=$(curl -sS -o dresp.txt -w '%{http_code}' -X POST \
+            "https://hex.pm/api/packages/elixir_php_email_validator/releases/${version}/docs" \
+            -H "authorization: ${HEX_API_KEY}" \
+            -H "content-type: application/octet-stream" \
+            --data-binary "@${docs}")
+          echo "docs POST -> HTTP ${dcode}"
+          case "${dcode}" in 200|201) echo "docs for ${version} published";; *) echo "::error::docs publish failed (HTTP ${dcode})"; cat dresp.txt; echo; exit 1;; esac
+
+  # Escalate a failed release loudly (the project's norm: human-actionable failures
+  # open a tracking issue) — a red run alone is too easy to miss.
+  notify-failure:
+    name: Escalate a failed release
+    needs: [release-please, provenance, publish]
+    if: ${{ failure() && (needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch' || needs.release-please.result == 'failure') }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          title="Release pipeline failed"
+          body="A release run failed (build / attest / gate / publish). The package and/or docs may be absent from Hex, or only partially published. The publish is idempotent — re-run the Release workflow via workflow_dispatch and it converges (already-published-with-matching-bytes is treated as success; divergent bytes hard-fail). Investigate: ${RUN_URL}"
+          num=$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$num" ]; then
+            gh issue comment "$num" --body "Still failing (re-checked). $body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
