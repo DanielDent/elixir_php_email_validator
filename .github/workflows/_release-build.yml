@@ -1,77 +1,55 @@
-name: Release build + attest + publish (reusable)
+name: Release build + attest (reusable)
 
-# Reusable workflow that builds, attests, and publishes the Hex package. It is
-# invoked by the `publish` caller job in `release-please.yml` via `jobs.<id>.uses:`,
-# so it runs inside the SAME release run (release-please creates the tag with
-# GITHUB_TOKEN, whose events don't trigger separate `on: release`/`push: tags`
-# workflows — see release-please.yml).
+# Reusable workflow: builds the Hex tarball, records its SLSA Build L3 provenance
+# attestation on its own isolated, ephemeral runner VM (the caller's steps can't
+# reach the Sigstore signing identity), and uploads THAT EXACT tarball as an
+# artifact. It holds NO Hex credential and declares NO environment — the publish key
+# never enters this VM.
 #
-# Why a separate reusable workflow: it runs on its own isolated, ephemeral runner
-# VM that the caller's user-defined steps cannot reach. That isolates the
-# OIDC/Sigstore signing identity from the build steps (`mix deps.get`, `mix test`,
-# `mix hex.build`, deps' code), which is what lifts the build-provenance
-# attestation from SLSA Build L2 (an inline job, where build and signing share one
-# VM) to SLSA Build L3. See GitHub's "artifact attestations and reusable workflows
-# to achieve SLSA v1 Build Level 3" and RELEASING.md.
+# The publish job (release-please.yml) downloads this artifact, re-verifies it
+# against the attestation, and POSTs those exact bytes to Hex — so the published
+# package is, by construction, the attested package (no rebuild, no "should be
+# identical" assumption). `mix hex.publish` is deliberately NOT used for the package:
+# it always rebuilds the tarball in memory and can't upload a prebuilt file.
 
 on:
   workflow_call:
-    # No inputs and no passed secrets: the Hex credential is an ENVIRONMENT secret
-    # of `hex-publish`, resolved by this job's `environment:` key below. Environment
-    # secrets attach to the job that declares the environment and cannot (and must
-    # not) be forwarded from the caller via `secrets:`.
 
-# Default-deny; the job re-grants within the caller's ceiling. A reusable workflow
-# can only narrow the token the caller passes down, never elevate it.
 permissions: {}
 
 jobs:
-  build-attest-publish:
-    name: Build, attest, and publish to Hex.pm
+  build-attest:
+    name: Build the tarball and attest its provenance (SLSA L3)
     runs-on: ubuntu-latest
-    # All Hex publishing happens here, behind environment protection rules. The
-    # `hex-publish` environment holds the HEX_API_KEY secret and restricts
-    # deployments to `main`; that branch rule is evaluated against the triggering
-    # run's ref (main), so it gates this job exactly as it did before the split.
-    environment:
-      name: hex-publish
-      url: https://hex.pm/packages/elixir_php_email_validator
     permissions:
-      contents: read # checkout
-      id-token: write # keyless Sigstore OIDC for the attestation (also what Hex
-      #                 OIDC "trusted publishing" will use when it ships)
+      contents: read
+      id-token: write # keyless Sigstore OIDC for the attestation
       attestations: write # record the build-provenance attestation
     steps:
-      # This is the ONLY job with the Hex credential, so its actions are pinned to
-      # immutable commit SHAs (a moved tag can't swap in malicious code). Dependabot
-      # keeps these current — on a cooldown. See RELEASING.md.
+      # Actions SHA-pinned (Dependabot keeps these current on a cooldown).
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: erlef/setup-beam@fc68ffb90438ef2936bbb3251622353b3dcb2f93 # v1.24.0
         with:
           otp-version: "28"
           elixir-version: "1.19"
       - run: mix deps.get
-      # Final gate: never publish a version that fails the golden regression.
+      # Gate: the inline `publish` job `needs:` this job, so a failing test here
+      # blocks the publish — never ship a version that fails the golden regression.
       - run: mix test
-      # Build the tarball and attest its provenance (keyless, via Sigstore) before
-      # publishing the identical, deterministic bytes. The attestation binds this
-      # tarball's SHA-256 to the repo, commit, and this reusable workflow (SLSA
-      # Build L3). It covers the GitHub-built artifact, not the bytes Hex re-serves
-      # to `mix deps.get` — verification is out-of-band (see RELEASING.md).
       - name: Build the Hex tarball
         run: mix hex.build
-      # The Sigstore signer identity is THIS workflow's path, so consumers verify
-      # with: gh attestation verify <tar> --signer-workflow \
-      #   DanielDent/elixir_php_email_validator/.github/workflows/_release-build.yml
+      # Attest the exact tarball bytes. Signer identity is THIS workflow's path, so
+      # consumers verify with --signer-workflow .../_release-build.yml.
       - name: Attest build provenance for the tarball
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
           subject-path: "elixir_php_email_validator-*.tar"
-      - name: Publish package + docs to Hex
-        run: mix hex.publish --yes
-        env:
-          # A least-privilege Hex API key stored as an Environment secret. Most
-          # secure option today; when Hex.pm OIDC "trusted publishing" ships, delete
-          # this secret and remove this env line — `id-token: write` is already here.
-          # See RELEASING.md (the trusted publisher references THIS workflow file).
-          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+      # Hand the EXACT attested tarball to the publish job (which re-verifies it
+      # against the attestation before uploading those bytes to Hex).
+      - name: Upload the attested tarball
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hex-tarball
+          path: elixir_php_email_validator-*.tar
+          if-no-files-found: error
+          retention-days: 1
